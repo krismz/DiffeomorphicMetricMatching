@@ -40,6 +40,8 @@ svm = lazy_import.lazy_module("sklearn.svm")
 make_pipeline = lazy_import.lazy_module("sklearn.pipeline.make_pipeline")
 pd = lazy_import.lazy_module("pandas")
 torch = lazy_import.lazy_module("torch")
+vlinalg = lazy_import.lazy_module("torchvectorized.vlinalg")
+#torch_sym3eig = lazy_import.lazy_module("torch_sym3eig")
 
 axes3d = lazy_import.lazy_module("mpl_toolkits.mplot3d.axes3d")
 art3d = lazy_import.lazy_module("mpl_toolkits.mplot3d.art3d")

@@ -5,7 +5,8 @@ import warnings
 import matplotlib.pyplot as plt
 from IPython.core.debugger import set_trace
 from math import pi
-
+from torchvectorized import vlinalg as tv
+from torch_sym3eig import Sym3Eig as se
 '''
 SplitEbinMetric.py stays the same from Atlas2D to Atlas3D
 '''
@@ -14,45 +15,14 @@ def trKsquare(B, A):
     G = torch.linalg.cholesky(B)
     inv_G = torch.inverse(G)
     W = torch.einsum("...ij,...jk,...lk->...il", inv_G, A, inv_G)
-    #----
-    # orig method
-    #----
-    lamda = torch.symeig(W, eigenvectors=True)[0]
+    lamda , _ = se.apply(W.reshape((-1,3,3)))
+    lamda = lamda.reshape((*W.shape[:-2],3))
     result = torch.sum(torch.log(lamda) ** 2, (-1))
-    #----
-    # vlinalg
-    #----
-    ##vlinalg needs shape [1,9,h,w,d]
-    #lamda = vlinalg.vSymEig(W.permute((3,4,0,1,2)).reshape((1,9,*W.shape[0:3])), eigenvectors=False)[0]
-    #result = torch.sum(torch.log(lamda.reshape((3,*W.shape[0:3])).permute((1,2,3,0))) ** 2, (-1))
-    #lamda_diff = torch.abs(lamda.reshape((3,*W.shape[0:3])).permute((1,2,3,0)) - torch.symeig(W, eigenvectors=True)[0])
-    #print('trKsquare new',lamda.shape,result.shape,torch.max(lamda), torch.min(lamda))
-    #----
-    # Sym3Eig
-    #----
-    #print('W shape', W.shape, W.reshape((-1,3,3)).shape)
-    #lamda = Sym3Eig.apply(W.reshape((-1,3,3)))[0].reshape((*W.shape[0:3],3))
-    #result = torch.sum(torch.log(lamda) ** 2, (-1))
-    #print('trKsquare new',lamda.shape,result.shape,torch.max(lamda), torch.min(lamda))
-    # ----
-    # End various methods
-    # ----
     return result
-
-def Squared_distance_Ebin_field(g0, g1, a, mask):
-#     inputs: g0.shape, g1.shape = [h, w, d, 3, 3]
-#     output: scalar
-#     3.3.4 https://www.cs.utah.edu/~haocheng/notes/NoteonMatching.pdf
-    inv_g0_g1 = torch.einsum("...ik,...kj->...ij", torch.inverse(g0), g1)
-    trK0square = trKsquare(g0, g1) - torch.log(torch.det(inv_g0_g1)) ** 2 *a  # torch.log(torch.det(inv_g0_g1) + 1e-25)
-    theta = torch.min((trK0square / a + 1e-40).sqrt() / 4., torch.tensor(np.pi, dtype=torch.double))  
-    alpha, beta = torch.det(g0).pow(1. / 4.), torch.det(g1).pow(1. / 4.)
-    E = 16 * a * (alpha ** 2 - 2 * alpha * beta * torch.cos(theta) + beta ** 2)
-    return (E*mask)
 
 
 def Squared_distance_Ebin(g0, g1, a, mask):
-#     inputs: g0.shape, g1.shape = [h, w, d, 3, 3]
+#     inputs: g0.shape, g1.shape = [hxwxd, 3, 3]
 #     output: scalar
 #     3.3.4 https://www.cs.utah.edu/~haocheng/notes/NoteonMatching.pdf
     inv_g0_g1 = torch.einsum("...ik,...kj->...ij", torch.inverse(g0), g1)
@@ -62,39 +32,19 @@ def Squared_distance_Ebin(g0, g1, a, mask):
     E = 16 * a * (alpha ** 2 - 2 * alpha * beta * torch.cos(theta) + beta ** 2)
     return torch.einsum("hwd,hwd->", E, mask)
 
-def energy_ebin(phi, g0, g1, f0, f1, sigma, dim, mask): 
-#     input: phi.shape = [3, h, w, d]; g0/g1/f0/f1.shape = [h, w, d, 3, 3]; sigma/dim = scalar; mask.shape = [1, h, w, d]
-#     output: scalar
-# the phi here is identity
-    phi_star_g1 = phi_pullback_3d(phi, g1)
-    phi_star_f1 = phi_pullback_3d(phi, f1)# the compose operation in this step uses a couple of thousands MB of memory
-    E1 = sigma * Squared_distance_Ebin(f0, phi_star_f1, 1./dim, mask)
-    E2 = Squared_distance_Ebin(g0, phi_star_g1, 1./dim, mask)
-    return E1 + E2
-
-def energy_ebin_no_phi(g0, g1, f0, f1, sigma, dim, mask): 
-#     input: g0/g1/f0/f1.shape = [h, w, d, 3, 3]; sigma/dim = scalar; mask.shape = [1, h, w, d]
-#     output: scalar
-# the phi here is assumed identity, so does not need to be provided in order to save memory
-    #phi_star_g1 = phi_pullback_3d(phi, g1)
-    #phi_star_f1 = phi_pullback_3d(phi, f1)# the compose operation in this step uses a couple of thousands MB of memory
-    E1 = sigma * Squared_distance_Ebin(f0, f1, 1./dim, mask)
-    E2 = Squared_distance_Ebin(g0, g1, 1./dim, mask)
-    return E1 + E2
 
 def logm_invB_A(B, A):
-#     inputs: A/B.shape = [h, w, d, 3, 3]
-#     output: shape = [h, w, d, 3, 3]
+#    import SimpleITK as sitk
+#     inputs: A/B.shape = [hxwxd, 3, 3]
+#     output: shape = [hxwxd, 3, 3]
     G = torch.linalg.cholesky(B)
-    torch.linalg.cholesky(A)
     inv_G = torch.inverse(G)
     W = torch.einsum("...ij,...jk,...lk->...il", inv_G, A, inv_G)
-    lamda, Q = torch.symeig(W, eigenvectors=True)
+    lamda, Q = se.apply(W)
     log_lamda = torch.zeros((*lamda.shape, lamda.shape[-1]),dtype=torch.double)
-    # for i in range(lamda.shape[-1]):
-    #     log_lamda[:, i, i] = torch.log(lamda[:, i])
     log_lamda = torch.diag_embed(torch.log(lamda))
     V = torch.einsum('...ji,...jk->...ik', inv_G, Q)
+    V[torch.det(V)<=0] = torch.eye((3))
     inv_V = torch.inverse(V)
     return torch.einsum('...ij,...jk,...kl->...il', V, log_lamda, inv_V)
 
@@ -318,6 +268,7 @@ def get_karcher_mean(G, a):
     G = G.reshape(size[0], -1, *size[-2:])  # (T,-1,3,3)
     gm = G[0]
     for i in range(1, G.size(0)):
+#         print('logm_invB_A')
         U = logm_invB_A(gm, G[i])
         UTrless = U - torch.einsum("...ii,kl->...kl", U, torch.eye(size[-1], dtype=torch.double)) / size[
             -1]  # (...,2,2)
@@ -327,13 +278,51 @@ def get_karcher_mean(G, a):
 
         # when g1 = 0, len(Ind_notInRange) and len(Ind_inRange) are both zero. So check len(Ind_notInRange) first
         if len(Ind_notInRange) == 0:  # all in the range
+#             print('Rie_Exp_extended')
             gm = Rie_Exp_extended(gm, inv_RieExp_extended(gm, G[i], a) / (i + 1), a)
         elif len(Ind_inRange) == 0:  # all not in range
+#             print('ptPick_notInRange')
             gm = ptPick_notInRange(gm, G[i], i)
         else:
+#             print('Rie_Exp_extended, ptPick_notInRange')
             gm[Ind_inRange] = Rie_Exp_extended(gm[Ind_inRange],
                                                inv_RieExp_extended(gm[Ind_inRange], G[i, Ind_inRange], a) / (i + 1),
                                                a)  # stop here
             gm[Ind_notInRange] = ptPick_notInRange(gm[Ind_notInRange], G[i, Ind_notInRange], i)
+#             print('end')
 
     return gm.reshape(*size[1:])
+
+def update_karcher_mean(karcher_mean, gi, i, a):
+    size = gi.size()
+    print('update_karcher_mean, size:', size)
+    gi = gi.reshape(-1, *size[-2:])  # (-1,3,3)
+    if i == 0:
+        print('i == 0')
+        gm = gi
+    else:
+        gm = karcher_mean.reshape(-1, *size[-2:])
+#         print('logm_invB_A')
+        U = logm_invB_A(gm, gi)
+        UTrless = U - torch.einsum("...ii,kl->...kl", U, torch.eye(size[-1], dtype=torch.double)) / size[
+            -1]  # (...,2,2)
+        theta = ((torch.einsum("...ik,...ki->...", UTrless, UTrless) / a).sqrt() / 4 - np.pi)
+        Ind_inRange = (theta < 0).nonzero().reshape(-1)  ## G[i] is in the range of the exponential map at gm
+        Ind_notInRange = (theta >= 0).nonzero().reshape(-1)  ## G[i] is not in the range
+
+        # when g1 = 0, len(Ind_notInRange) and len(Ind_inRange) are both zero. So check len(Ind_notInRange) first
+        if len(Ind_notInRange) == 0:  # all in the range
+#             print('Rie_Exp_extended')
+            gm = Rie_Exp_extended(gm, inv_RieExp_extended(gm, gi, a) / (i + 1), a)
+        elif len(Ind_inRange) == 0:  # all not in range
+#             print('ptPick_notInRange')
+            gm = ptPick_notInRange(gm, gi, i)
+        else:
+#             print('Rie_Exp_extended, ptPick_notInRange')
+            gm[Ind_inRange] = Rie_Exp_extended(gm[Ind_inRange],
+                                               inv_RieExp_extended(gm[Ind_inRange], gi[Ind_inRange], a) / (i + 1),
+                                               a)  # stop here
+            gm[Ind_notInRange] = ptPick_notInRange(gm[Ind_notInRange], gi[Ind_notInRange], i)
+#             print('end')
+
+    return gm.reshape(*size[:])

@@ -6,28 +6,25 @@ from algo import euler, geodesic
 import algo.metricModSolver as mms
 
 if __name__ == "__main__":
-  inroot = '/usr/sci/projects/HCP/Kris/NSFCRCNS/prepped_UKF_data_with_grad_dev/'
-  #outdir = '/usr/sci/projects/HCP/Kris/NSFCRCNS/TestResults/UKF_experiments/'
-  #inroot = '/usr/sci/projects/HCP/Kris/NSFCRCNS/prepped_data/'
-  cases=[sbj for sbj in os.listdir(inroot) if sbj[0] != '.']
+  inroot = '/usr/sci/projects/abcd/anxiety_study/derivatives/metric_matching/'
+  cases=[sbj for sbj in os.listdir(inroot) if sbj[:4] == 'sub-']
+  upsamp=''
+  #upsamp='_upsamp'
 
-  bval = 1000
-  bval = 'all'
-  outdir = f'/usr/sci/projects/HCP/Kris/NSFCRCNS/TestResults/UKF_experiments/B{bval}Results/'
-  
   for cc in cases:
     try:
       run_case = f'{cc}'
       print("Running", run_case)
       for_mat_file = {}
-      out_prefix = outdir + run_case
+      t1_prefix = os.path.join(inroot, run_case, 'ses-baselineYear1Arm1','anat', run_case + '_ses-baselineYear1Arm1')
+      dwi_prefix = os.path.join(inroot, run_case, 'ses-baselineYear1Arm1','dwi', run_case + '_ses-baselineYear1Arm1')
       
-      subj = run_case[0:6]
-      indir = inroot + subj + '/'
-      tens_file = f'dti_{bval}_tensor_rreg.nhdr'
-      mask_file = f'dti_{bval}_FA_mask_rreg.nhdr'
-      #t1_file = 't1_stripped_irescaled.nhdr'
-      t1_file = 't1_to_reft1_rreg.nhdr'
+      subj = run_case
+      #tens_file = f'{dwi_prefix}_dti_tensor.nhdr'
+      #mask_file = f'{dwi_prefix}_dti_FA_mask.nhdr'
+      tens_file = f'{dwi_prefix}_dti{upsamp}_tensor.nhdr'
+      mask_file = f'{dwi_prefix}_dti{upsamp}_FA_mask.nhdr'
+      t1_file = f'{t1_prefix}_run-01_T1w.nii'
       num_iters = 1000 # Way too much, but want to understand convergence for all brain cases
       save_intermediate_results = True
       # TODO Something funky is going on with thresh_ratio.  Seems better to skip thresholding altogether
@@ -39,10 +36,10 @@ if __name__ == "__main__":
       small_eval = 5e-3
       sigma = 1.5
       
-      in_tens = ReadTensors(indir+'/'+tens_file)
-      in_mask = ReadScalars(indir+'/'+mask_file)
+      in_tens = ReadTensors(tens_file)
+      in_mask = ReadScalars(mask_file)
       if t1_file:
-        in_T1 = ReadScalars(indir+'/'+t1_file)
+        in_T1 = ReadScalars(t1_file)
       else:
         in_T1 = in_mask
       
@@ -72,15 +69,15 @@ if __name__ == "__main__":
 
       out_T1 = in_T1.astype(float)[:,::-1,:].copy()
         
-      WriteTensorNPArray(out_tens_tri, out_prefix + f'_thresh_{thresh_ratio}_tensors.nhdr')
-      WriteTensorNPArray(in_tens, out_prefix + '_orig_tensors.nhdr')
-      WriteScalarNPArray(out_mask, out_prefix + '_filt_mask.nhdr')
-      WriteScalarNPArray(alpha, out_prefix + '_alpha.nhdr')
+      WriteTensorNPArray(out_tens_tri, dwi_prefix + f'_thresh_{thresh_ratio}{upsamp}_tensors.nhdr')
+      WriteTensorNPArray(in_tens, dwi_prefix + f'{upsamp}_orig_tensors.nhdr')
+      WriteScalarNPArray(out_mask, dwi_prefix + f'{upsamp}_filt_mask.nhdr')
+      WriteScalarNPArray(alpha, dwi_prefix + f'{upsamp}_alpha.nhdr')
       if t1_file:
-        WriteScalarNPArray(in_T1, out_prefix + '_T1.nhdr')
-        WriteScalarNPArray(out_T1, out_prefix + '_T1_flip_y.nhdr')
+        #WriteScalarNPArray(in_T1, out_prefix + '_T1.nhdr')
+        WriteScalarNPArray(out_T1, t1_prefix + '_T1_flip_y.nhdr')
       if save_intermediate_results:
-        WriteTensorNPArray(scaled_tens_tri, out_prefix + f'_scaled_tensors.nhdr')
+        WriteTensorNPArray(scaled_tens_tri, dwi_prefix + f'{upsamp}_scaled_tensors.nhdr')
       
       for_mat_file['orig_tensors'] = in_tens
       for_mat_file['thresh_tensors'] = out_tens
@@ -101,7 +98,7 @@ if __name__ == "__main__":
       if save_intermediate_results:
         for_mat_file['scaled_tens_4_path'] = scaled_tens_4_path
         
-      savemat(out_prefix + '_results.mat',for_mat_file)
+      savemat(dwi_prefix + f'{upsamp}_results.mat',for_mat_file)
     except Exception as err:
       print('Exception', err, 'caught while processing subj', cc, '. Moving to next subject.')
 

@@ -2,6 +2,9 @@ from lazy_imports import np, ndimage
 from data.convert import get_framework
 
 def is_interior_pt_2d(ii, jj, mask):
+  if ((ii == 0) or (ii == mask.shape[0]-1) or
+      (jj == 0) or (jj == mask.shape[1]-1)):
+    return(False)
   return(( mask[ii-1,jj-1] + mask[ii-1,jj] + mask[ii-1,jj+1] \
          + mask[ii,jj-1] + mask[ii,jj] + mask[ii,jj+1] \
          + mask[ii+1,jj-1] + mask[ii+1,jj] + mask[ii+1,jj+1]) == 9)

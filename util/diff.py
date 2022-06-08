@@ -1533,12 +1533,18 @@ def gradient_mask_3d(img, mask, modify_mask=True):
 
 def gradient_bdry_3d(img, bdry_idx, bdry_map, fw=np):
 
+  fw, fw_name = get_framework(img)
   xsz = img.shape[0]
   ysz = img.shape[1]
   zsz = img.shape[2]
-  gradX = fw.zeros((xsz,ysz,zsz),dtype=fw.double)
-  gradY = fw.zeros((xsz,ysz,zsz),dtype=fw.double)
-  gradZ = fw.zeros((xsz,ysz,zsz),dtype=fw.double)
+  if fw_name == 'torch':
+    gradX = fw.zeros((xsz,ysz,zsz), dtype=fw.double, device=img.device)
+    gradY = fw.zeros((xsz,ysz,zsz), dtype=fw.double, device=img.device)
+    gradZ = fw.zeros((xsz,ysz,zsz), dtype=fw.double, device=img.device)
+  else:
+    gradX = fw.zeros((xsz,ysz,zsz), dtype=fw.double)
+    gradY = fw.zeros((xsz,ysz,zsz), dtype=fw.double)
+    gradZ = fw.zeros((xsz,ysz,zsz), dtype=fw.double)
 
   for btype, bnum in bdry_map.items():
     if bnum == 0:

@@ -52,6 +52,9 @@ def readRaw(filename,dtype=np.float64):
 def ReadTensors(filename):
   return(GetNPArrayFromSITK(sitk.ReadImage(filename),True))
 
+def ReadVectors(filename):
+  return(GetNPArrayFromSITK(sitk.ReadImage(filename)))
+
 def ReadScalars(filename):
   return(GetNPArrayFromSITK(sitk.ReadImage(filename)))
 

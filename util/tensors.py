@@ -1,8 +1,87 @@
 import math
-from lazy_imports import np
+#from lazy_imports import torch
+# currently an incompatibility between lazy import of torch and importing torch_sym3eig
+#import torch
+#import torch_sym3eig # installed from https://github.com/nnaisense/pytorch_sym3eig
 from lazy_imports import torch
+#from lazy_imports import torch_sym3eig # installed from https://github.com/nnaisense/pytorch_sym3eig
+from lazy_imports import np
+from lazy_imports import sitk
 from data.convert import get_framework
+from data.convert import GetNPArrayFromSITK, GetSITKImageFromNP
+from numba import jit, njit, prange
+# from interp3d import interp_3d # installed from https://github.com/jglaser/interp3d/blob/master/interp3d/interp_3d.py
 
+# uncomment this for legit @profile when not using kernprof
+def profile(blah):                
+  return blah
+
+def batch_cholesky_v2(tens):
+  fw, fw_name = get_framework(tens)
+  if fw_name == 'numpy':
+    nan = fw.nan
+  else:
+    nan = fw.tensor(float('nan'))
+  L = fw.zeros_like(tens)
+  for xx in range(tens.shape[0]):
+    for yy in range(tens.shape[1]):
+      for zz in range(tens.shape[2]):
+        try:
+          L[xx,yy,zz] = fw.linalg.cholesky(tens[xx,yy,zz])
+        except:
+          L[xx,yy,zz] = nan * fw.ones((tens.shape[-2:]))
+  return L
+
+def batch_cholesky(tens):
+  # from https://stackoverflow.com/questions/60230464/pytorch-torch-cholesky-ignoring-exception
+  # will get NaNs instead of exception where cholesky is invalid
+  fw, fw_name = get_framework(tens)
+  L = fw.zeros_like(tens)
+
+  for i in range(tens.shape[-1]):
+    for j in range(i+1):
+      s = 0.0
+      for k in range(j):
+        s = s + L[...,i,k] * L[...,j,k]
+
+      L[...,i,j] = fw.sqrt(tens[...,i,i] - s) if (i == j) else \
+                      (1.0 / L[...,j,j] * (tens[...,i,j] - s))
+  return L
+
+def smooth_tensors(tens, sigma):
+  fw, fw_name = get_framework(tens)
+  if fw_name == 'numpy':
+    filt_tens = GetNPArrayFromSITK(
+                sitk.RecursiveGaussian(sitk.RecursiveGaussian(sitk.RecursiveGaussian(
+                  GetSITKImageFromNP(tens,True), sigma=sigma,direction=0), sigma=sigma,direction=1), sigma=sigma, direction=2),True)
+  else:
+    filt_tens = torch.from_numpy(GetNPArrayFromSITK(
+                sitk.RecursiveGaussian(sitk.RecursiveGaussian(sitk.RecursiveGaussian(
+                GetSITKImageFromNP(tens.cpu().numpy(),True), sigma=sigma,direction=0), sigma=sigma,direction=1), sigma=sigma,direction=2),True))
+  return(filt_tens)
+
+def tens_6_to_tens_3x3(tens):
+  tens_full = np.zeros((tens.shape[0], tens.shape[1], tens.shape[2], 3, 3))
+  tens_full[:,:,:,0,0] = tens[:,:,:,0]
+  tens_full[:,:,:,0,1] = tens[:,:,:,1]
+  tens_full[:,:,:,1,0] = tens[:,:,:,1]
+  tens_full[:,:,:,0,2] = tens[:,:,:,2]
+  tens_full[:,:,:,2,0] = tens[:,:,:,2]
+  tens_full[:,:,:,1,1] = tens[:,:,:,3]
+  tens_full[:,:,:,1,2] = tens[:,:,:,4]
+  tens_full[:,:,:,2,1] = tens[:,:,:,4]
+  tens_full[:,:,:,2,2] = tens[:,:,:,5]
+  return(tens_full)
+
+def tens_3x3_to_tens_6(tens):
+  tens_tri = np.zeros((tens.shape[0], tens.shape[1], tens.shape[2], 6))
+  tens_tri[:,:,:,0] = tens[:,:,:,0,0]
+  tens_tri[:,:,:,1] = tens[:,:,:,0,1]
+  tens_tri[:,:,:,2] = tens[:,:,:,0,2]
+  tens_tri[:,:,:,3] = tens[:,:,:,1,1]
+  tens_tri[:,:,:,4] = tens[:,:,:,1,2]
+  tens_tri[:,:,:,5] = tens[:,:,:,2,2]
+  return(tens_tri)
 
 def direction(coordinate, tensor_field):
   tens = tens_interp(coordinate[0], coordinate[1], tensor_field)
@@ -22,7 +101,19 @@ def direction_3d(coordinate, tensor_field):
 def direction_3d_torch(coordinate, tensor_field):
   tens = tens_interp_3d_torch(coordinate[0], coordinate[1], coordinate[2], tensor_field)
   u, v, w = eigen_vec_3d_torch(tens)
-  return (torch.tensor([u, v, w]))
+  return (torch.tensor((u, v, w)))
+
+#@jit(nopython=True)
+def batch_direction_3d(coordinates, tensor_field):
+  tens = batch_tens_interp_3d(coordinates[:,0], coordinates[:,1], coordinates[:,2], tensor_field)
+  directions = batch_eigen_vec_3d(tens)
+  return (directions)
+
+def batch_direction_3d_torch(coordinates, tensor_field):
+  tens = batch_tens_interp_3d_torch(coordinates[:,0], coordinates[:,1], coordinates[:,2], tensor_field)
+  directions = batch_eigen_vec_3d_torch(tens)
+  return (directions)
+
 
 def fractional_anisotropy(g):
     e, _ = torch.symeig(g)
@@ -39,9 +130,11 @@ def eigen_vec(tens):
   return (u, v)
 
 def eigen_vec_torch(tens):
-  evals, evecs =torch.symeig(tens, eigenvectors=True)
-  [u, v] = evecs[:, evals.argmax()]
-  return (u, v)
+  #evals, evecs =torch.symeig(tens, eigenvectors=True)
+  #[u, v] = evecs[:, evals.argmax()]
+  evals, evecs = torch_sym3eig.Sym3Eig.apply(tens.reshape((-1,3,3)))
+  [u, v] = evecs[:, :, evals.argmax()]
+  return (u,v)
 
 def eigen_vec_3d(tens):
   evals, evecs = np.linalg.eigh(tens)
@@ -50,9 +143,27 @@ def eigen_vec_3d(tens):
 
 def eigen_vec_3d_torch(tens):
   #evals, evecs = torch.symeig(tens,eigenvectors=True)
-  evals, evecs = torch.linalg.eigh(tens)
-  [u, v, w] = evecs[:, evals.argmax()]
-  return (u, v, w)
+  #evals, evecs = torch.linalg.eigh(tens)
+  #[u, v, w] = evecs[:, evals.argmax()]
+  evals, evecs = torch_sym3eig.Sym3Eig.apply(tens.reshape((-1,3,3)))
+  [u, v, w] = evecs[0, :, evals.argmax()]
+  return (u,v,w)
+
+#@jit(nopython=True)
+def batch_eigen_vec_3d(tens):
+  evals, evecs = np.linalg.eigh(tens)
+  #return (evecs[:, :, evals.argmax(axis=1)])
+  idx = np.expand_dims(np.expand_dims(evals.argmax(axis=1),axis=-1),axis=-1)
+  return(np.take_along_axis(evecs, idx, axis=2).reshape((-1,3)))
+
+def batch_eigen_vec_3d_torch(tens):
+  #evals, evecs = torch.symeig(tens,eigenvectors=True)
+  #evals, evecs = torch.linalg.eigh(tens)
+  #[u, v, w] = evecs[:, evals.argmax()]
+  evals, evecs = torch_sym3eig.Sym3Eig.apply(tens.reshape((-1,3,3)))
+  #return (evecs[:, :, evals.argmax(axis=1)])
+  idx = torch.unsqueeze(torch.unsqueeze(torch.argmax(evals, dim=1),-1),-1)
+  return(torch.take_along_dim(evecs, idx, dim = 2).reshape((-1,3)))
 
 
 def circ_shift(I, shift):
@@ -612,6 +723,521 @@ def tens_interp_3d_torch(x, y, z, tensor_field):
 # end tens_interp_3d_torch
 
 
+# @jit(nopython=False,parallel=True)
+# def make_tens_interpolators(tensor_field):
+#   x = np.linspace(0,tensor_field.shape[1]-1,tensor_field.shape[1])
+#   y = np.linspace(0,tensor_field.shape[2]-1,tensor_field.shape[2])
+#   z = np.linspace(0,tensor_field.shape[3]-1,tensor_field.shape[3])
+
+#   interpolators = [interp_3d.Interp3D(tensor_field[i], x,y,z) for i in range(tensor_field.shape[0])]
+#   return(interpolators)
+# # end make_tens_interpolators
+
+# @jit(nopython=False,parallel=True)
+# def batch_interpolate_3d(x,y,z, interpolators):
+#   num_tens = x.shape[0]
+#   tens = np.zeros((num_tens, 3, 3))
+#   for p in prange(num_tens):
+#     tens[p,0,0] = interpolators[0]((x[p],y[p],z[p]))
+#     tens[p,0,1] = interpolators[1]((x[p],y[p],z[p]))
+#     tens[p,1,0] = tens[p,0,1]
+#     tens[p,0,2] = interpolators[2]((x[p],y[p],z[p]))
+#     tens[p,2,0] = tens[p,0,2]
+#     tens[p,1,1] = interpolators[3]((x[p],y[p],z[p]))
+#     tens[p,1,2] = interpolators[4]((x[p],y[p],z[p]))
+#     tens[p,2,1] = tens[p,1,2]
+#     tens[p,2,2] = interpolators[5]((x[p],y[p],z[p]))
+#   return(tens)
+# # end batch_interpolate_3d
+
+##@profile
+##@jit(nopython=True,parallel=True)
+##@njit(parallel=True)
+@njit()
+def batch_tens_interp_3d(x, y, z, tensor_field):
+  #print("Warning! reenable njit")
+  num_tens = x.shape[0]
+  tens = np.zeros((num_tens, 3, 3),dtype=np.float_)
+  eps11 = tensor_field[0, :, :, :]
+  eps12 = tensor_field[1, :, :, :]
+  eps13 = tensor_field[2, :, :, :]
+  eps22 = tensor_field[3, :, :, :]
+  eps23 = tensor_field[4, :, :, :]
+  eps33 = tensor_field[5, :, :, :]
+
+  x = np.where(x<0,0,x)
+  x = np.where(x>=eps11.shape[0]-1,eps11.shape[0]-1,x)
+  y = np.where(y<0,0,y)
+  y = np.where(y>=eps11.shape[1]-1,eps11.shape[1]-1,y)
+  z = np.where(z<0,0,z)
+  z = np.where(z>=eps11.shape[2]-1,eps11.shape[2]-1,z)
+
+  ceil_x = np.ceil(x).astype(np.int_)
+  floor_x = np.floor(x).astype(np.int_)
+  ceil_y = np.ceil(y).astype(np.int_)
+  floor_y = np.floor(y).astype(np.int_)
+  ceil_z = np.ceil(z).astype(np.int_)
+  floor_z = np.floor(z).astype(np.int_)
+  x_minus_floor_x = np.abs(x - floor_x)
+  x_minus_ceil_x = np.abs(x - ceil_x)
+  y_minus_floor_y = np.abs(y - floor_y)
+  y_minus_ceil_y = np.abs(y - ceil_y)
+  z_minus_floor_z = np.abs(z - floor_z)
+  z_minus_ceil_z = np.abs(z - ceil_z)
+  
+  # # Find index where interpolation is needed and interpolate
+  # intidx = np.where((x_minus_floor_x + x_minus_ceil_x
+  #              + y_minus_floor_y + y_minus_ceil_y
+  #              + z_minus_floor_z + z_minus_ceil_z) >= 1e-14)
+  
+  # if len(intidx[0]) > 0:
+  #   tens[intidx,0,0] = x_minus_floor_x[intidx] * y_minus_floor_y[intidx] * z_minus_floor_z[intidx] * eps11[ceil_x[intidx], ceil_y[intidx], ceil_z[intidx]] \
+  #          + x_minus_floor_x[intidx] * y_minus_ceil_y[intidx] * z_minus_floor_z[intidx] * eps11[ceil_x[intidx], floor_y[intidx], ceil_z[intidx]] \
+  #          + x_minus_ceil_x[intidx] * y_minus_floor_y[intidx] * z_minus_floor_z[intidx] * eps11[floor_x[intidx], ceil_y[intidx], ceil_z[intidx]] \
+  #          + x_minus_ceil_x[intidx] * y_minus_ceil_y[intidx] * z_minus_floor_z[intidx] * eps11[floor_x[intidx], floor_y[intidx], ceil_z[intidx]] \
+  #          + x_minus_floor_x[intidx] * y_minus_floor_y[intidx] * z_minus_ceil_z[intidx] * eps11[ceil_x[intidx], ceil_y[intidx], floor_z[intidx]] \
+  #          + x_minus_floor_x[intidx] * y_minus_ceil_y[intidx] * z_minus_ceil_z[intidx] * eps11[ceil_x[intidx], floor_y[intidx], floor_z[intidx]] \
+  #          + x_minus_ceil_x[intidx] * y_minus_floor_y[intidx] * z_minus_ceil_z[intidx] * eps11[floor_x[intidx], ceil_y[intidx], floor_z[intidx]] \
+  #          + x_minus_ceil_x[intidx] * y_minus_ceil_y[intidx] * z_minus_ceil_z[intidx] * eps11[floor_x[intidx], floor_y[intidx], floor_z[intidx]]
+  #   tens[intidx,0,1] = x_minus_floor_x[intidx] * y_minus_floor_y[intidx] * z_minus_floor_z[intidx] * eps12[ceil_x[intidx], ceil_y[intidx], ceil_z[intidx]] \
+  #          + x_minus_floor_x[intidx] * y_minus_ceil_y[intidx] * z_minus_floor_z[intidx] * eps12[ceil_x[intidx], floor_y[intidx], ceil_z[intidx]] \
+  #          + x_minus_ceil_x[intidx] * y_minus_floor_y[intidx] * z_minus_floor_z[intidx] * eps12[floor_x[intidx], ceil_y[intidx], ceil_z[intidx]] \
+  #          + x_minus_ceil_x[intidx] * y_minus_ceil_y[intidx] * z_minus_floor_z[intidx] * eps12[floor_x[intidx], floor_y[intidx], ceil_z[intidx]] \
+  #          + x_minus_floor_x[intidx] * y_minus_floor_y[intidx] * z_minus_ceil_z[intidx] * eps12[ceil_x[intidx], ceil_y[intidx], floor_z[intidx]] \
+  #          + x_minus_floor_x[intidx] * y_minus_ceil_y[intidx] * z_minus_ceil_z[intidx] * eps12[ceil_x[intidx], floor_y[intidx], floor_z[intidx]] \
+  #          + x_minus_ceil_x[intidx] * y_minus_floor_y[intidx] * z_minus_ceil_z[intidx] * eps12[floor_x[intidx], ceil_y[intidx], floor_z[intidx]] \
+  #          + x_minus_ceil_x[intidx] * y_minus_ceil_y[intidx] * z_minus_ceil_z[intidx] * eps12[floor_x[intidx], floor_y[intidx], floor_z[intidx]]
+  #   tens[intidx,1,0] = tens[intidx,0,1]
+  #   tens[intidx,0,2] = x_minus_floor_x[intidx] * y_minus_floor_y[intidx] * z_minus_floor_z[intidx] * eps13[ceil_x[intidx], ceil_y[intidx], ceil_z[intidx]] \
+  #          + x_minus_floor_x[intidx] * y_minus_ceil_y[intidx] * z_minus_floor_z[intidx] * eps13[ceil_x[intidx], floor_y[intidx], ceil_z[intidx]] \
+  #          + x_minus_ceil_x[intidx] * y_minus_floor_y[intidx] * z_minus_floor_z[intidx] * eps13[floor_x[intidx], ceil_y[intidx], ceil_z[intidx]] \
+  #          + x_minus_ceil_x[intidx] * y_minus_ceil_y[intidx] * z_minus_floor_z[intidx] * eps13[floor_x[intidx], floor_y[intidx], ceil_z[intidx]] \
+  #          + x_minus_floor_x[intidx] * y_minus_floor_y[intidx] * z_minus_ceil_z[intidx] * eps13[ceil_x[intidx], ceil_y[intidx], floor_z[intidx]] \
+  #          + x_minus_floor_x[intidx] * y_minus_ceil_y[intidx] * z_minus_ceil_z[intidx] * eps13[ceil_x[intidx], floor_y[intidx], floor_z[intidx]] \
+  #          + x_minus_ceil_x[intidx] * y_minus_floor_y[intidx] * z_minus_ceil_z[intidx] * eps13[floor_x[intidx], ceil_y[intidx], floor_z[intidx]] \
+  #          + x_minus_ceil_x[intidx] * y_minus_ceil_y[intidx] * z_minus_ceil_z[intidx] * eps13[floor_x[intidx], floor_y[intidx], floor_z[intidx]]
+  #   tens[intidx,2,0] = tens[intidx,0,2]
+  #   tens[intidx,1,1] = x_minus_floor_x[intidx] * y_minus_floor_y[intidx] * z_minus_floor_z[intidx] * eps22[ceil_x[intidx], ceil_y[intidx], ceil_z[intidx]] \
+  #          + x_minus_floor_x[intidx] * y_minus_ceil_y[intidx] * z_minus_floor_z[intidx] * eps22[ceil_x[intidx], floor_y[intidx], ceil_z[intidx]] \
+  #          + x_minus_ceil_x[intidx] * y_minus_floor_y[intidx] * z_minus_floor_z[intidx] * eps22[floor_x[intidx], ceil_y[intidx], ceil_z[intidx]] \
+  #          + x_minus_ceil_x[intidx] * y_minus_ceil_y[intidx] * z_minus_floor_z[intidx] * eps22[floor_x[intidx], floor_y[intidx], ceil_z[intidx]] \
+  #          + x_minus_floor_x[intidx] * y_minus_floor_y[intidx] * z_minus_ceil_z[intidx] * eps22[ceil_x[intidx], ceil_y[intidx], floor_z[intidx]] \
+  #          + x_minus_floor_x[intidx] * y_minus_ceil_y[intidx] * z_minus_ceil_z[intidx] * eps22[ceil_x[intidx], floor_y[intidx], floor_z[intidx]] \
+  #          + x_minus_ceil_x[intidx] * y_minus_floor_y[intidx] * z_minus_ceil_z[intidx] * eps22[floor_x[intidx], ceil_y[intidx], floor_z[intidx]] \
+  #          + x_minus_ceil_x[intidx] * y_minus_ceil_y[intidx] * z_minus_ceil_z[intidx] * eps22[floor_x[intidx], floor_y[intidx], floor_z[intidx]]
+  #   tens[intidx,1,2] = x_minus_floor_x[intidx] * y_minus_floor_y[intidx] * z_minus_floor_z[intidx] * eps23[ceil_x[intidx], ceil_y[intidx], ceil_z[intidx]] \
+  #          + x_minus_floor_x[intidx] * y_minus_ceil_y[intidx] * z_minus_floor_z[intidx] * eps23[ceil_x[intidx], floor_y[intidx], ceil_z[intidx]] \
+  #          + x_minus_ceil_x[intidx] * y_minus_floor_y[intidx] * z_minus_floor_z[intidx] * eps23[floor_x[intidx], ceil_y[intidx], ceil_z[intidx]] \
+  #          + x_minus_ceil_x[intidx] * y_minus_ceil_y[intidx] * z_minus_floor_z[intidx] * eps23[floor_x[intidx], floor_y[intidx], ceil_z[intidx]] \
+  #          + x_minus_floor_x[intidx] * y_minus_floor_y[intidx] * z_minus_ceil_z[intidx] * eps23[ceil_x[intidx], ceil_y[intidx], floor_z[intidx]] \
+  #          + x_minus_floor_x[intidx] * y_minus_ceil_y[intidx] * z_minus_ceil_z[intidx] * eps23[ceil_x[intidx], floor_y[intidx], floor_z[intidx]] \
+  #          + x_minus_ceil_x[intidx] * y_minus_floor_y[intidx] * z_minus_ceil_z[intidx] * eps23[floor_x[intidx], ceil_y[intidx], floor_z[intidx]] \
+  #          + x_minus_ceil_x[intidx] * y_minus_ceil_y[intidx] * z_minus_ceil_z[intidx] * eps23[floor_x[intidx], floor_y[intidx], floor_z[intidx]]
+  #   tens[intidx,2,1] = tens[intidx,1,2]
+  #   tens[intidx,2,2] = x_minus_floor_x[intidx] * y_minus_floor_y[intidx] * z_minus_floor_z[intidx] * eps33[ceil_x[intidx], ceil_y[intidx], ceil_z[intidx]] \
+  #          + x_minus_floor_x[intidx] * y_minus_ceil_y[intidx] * z_minus_floor_z[intidx] * eps33[ceil_x[intidx], floor_y[intidx], ceil_z[intidx]] \
+  #          + x_minus_ceil_x[intidx] * y_minus_floor_y[intidx] * z_minus_floor_z[intidx] * eps33[floor_x[intidx], ceil_y[intidx], ceil_z[intidx]] \
+  #          + x_minus_ceil_x[intidx] * y_minus_ceil_y[intidx] * z_minus_floor_z[intidx] * eps33[floor_x[intidx], floor_y[intidx], ceil_z[intidx]] \
+  #          + x_minus_floor_x[intidx] * y_minus_floor_y[intidx] * z_minus_ceil_z[intidx] * eps33[ceil_x[intidx], ceil_y[intidx], floor_z[intidx]] \
+  #          + x_minus_floor_x[intidx] * y_minus_ceil_y[intidx] * z_minus_ceil_z[intidx] * eps33[ceil_x[intidx], floor_y[intidx], floor_z[intidx]] \
+  #          + x_minus_ceil_x[intidx] * y_minus_floor_y[intidx] * z_minus_ceil_z[intidx] * eps33[floor_x[intidx], ceil_y[intidx], floor_z[intidx]] \
+  #          + x_minus_ceil_x[intidx] * y_minus_ceil_y[intidx] * z_minus_ceil_z[intidx] * eps33[floor_x[intidx], floor_y[intidx], floor_z[intidx]]
+
+  # # Find index where no interpolation is needed and just copy the values
+  # nointidx = np.where((x_minus_floor_x + x_minus_ceil_x
+  #              + y_minus_floor_y + y_minus_ceil_y
+  #              + z_minus_floor_z + z_minus_ceil_z) < 1e-14)
+  # if len(nointidx[0]) > 0:
+  #   tens[nointidx,0,0] = eps11[x[nointidx].astype(np.int64),y[nointidx].astype(np.int64),z[nointidx].astype(np.int64)]
+  #   tens[nointidx,0,1] = eps12[x[nointidx].astype(np.int64),y[nointidx].astype(np.int64),z[nointidx].astype(np.int64)]
+  #   tens[nointidx,1,0] = tens[nointidx,0,1]
+  #   tens[nointidx,0,2] = eps13[x[nointidx].astype(np.int64),y[nointidx].astype(np.int64),z[nointidx].astype(np.int64)]
+  #   tens[nointidx,2,0] = tens[nointidx,0,2]
+  #   tens[nointidx,1,1] = eps22[x[nointidx].astype(np.int64),y[nointidx].astype(np.int64),z[nointidx].astype(np.int64)]
+  #   tens[nointidx,1,2] = eps23[x[nointidx].astype(np.int64),y[nointidx].astype(np.int64),z[nointidx].astype(np.int64)]
+  #   tens[nointidx,2,1] = tens[nointidx,1,2]
+  #   tens[nointidx,2,2] = eps33[x[nointidx].astype(np.int64),y[nointidx].astype(np.int64),z[nointidx].astype(np.int64)]
+
+  # floor_x_floor_y = x_minus_floor_x * y_minus_floor_y
+  # floor_x_floor_y_floor_z = floor_x_floor_y * z_minus_floor_z
+  # floor_x_floor_y_ceil_z = floor_x_floor_y * z_minus_ceil_z
+  # floor_x_ceil_y = x_minus_floor_x * y_minus_ceil_y
+  # floor_x_ceil_y_floor_z = floor_x_ceil_y * z_minus_floor_z
+  # floor_x_ceil_y_ceil_z = floor_x_ceil_y * z_minus_ceil_z
+  # ceil_x_floor_y = x_minus_ceil_x * y_minus_floor_y
+  # ceil_x_floor_y_floor_z = ceil_x_floor_y * z_minus_floor_z
+  # ceil_x_floor_y_ceil_z = ceil_x_floor_y * z_minus_ceil_z
+  # ceil_x_ceil_y = x_minus_ceil_x * y_minus_ceil_y
+  # ceil_x_ceil_y_floor_z = ceil_x_ceil_y * z_minus_floor_z
+  # ceil_x_ceil_y_ceil_z = ceil_x_ceil_y * z_minus_ceil_z
+
+  # Find index where interpolation is needed and interpolate
+  # This for loop is way too slow without numba.  Use above indexing if numba is not available
+  #for p in prange(num_tens):
+  for p in range(num_tens):
+    if x[p] == floor_x[p] and y[p] == floor_y[p] and z[p] == floor_z[p]:
+      # Find index where no interpolation is needed and just copy the values
+      tens[p,0,0] = eps11[floor_x[p],floor_y[p],floor_z[p]]
+      tens[p,0,1] = eps12[floor_x[p],floor_y[p],floor_z[p]]
+      tens[p,1,0] = tens[p,0,1]
+      tens[p,0,2] = eps13[floor_x[p],floor_y[p],floor_z[p]]
+      tens[p,2,0] = tens[p,0,2]
+      tens[p,1,1] = eps22[floor_x[p],floor_y[p],floor_z[p]]
+      tens[p,1,2] = eps23[floor_x[p],floor_y[p],floor_z[p]]
+      tens[p,2,1] = tens[p,1,2]
+      tens[p,2,2] = eps33[floor_x[p],floor_y[p],floor_z[p]]
+    elif x[p] == floor_x[p] and y[p] != floor_y[p] and z[p] != floor_z[p]:
+      floor_y_floor_z = y_minus_floor_y[p] * z_minus_floor_z[p]
+      floor_y_ceil_z = y_minus_floor_y[p] * z_minus_ceil_z[p]
+      ceil_y_floor_z = y_minus_ceil_y[p] * z_minus_floor_z[p]
+      ceil_y_ceil_z = y_minus_ceil_y[p] * z_minus_ceil_z[p]
+      
+      tens[p,0,0] = floor_y_floor_z * eps11[np.int64(x[p]), ceil_y[p], ceil_z[p]] \
+           + ceil_y_floor_z * eps11[np.int64(x[p]), floor_y[p], ceil_z[p]] \
+           + floor_y_ceil_z * eps11[np.int64(x[p]), ceil_y[p], floor_z[p]] \
+           + ceil_y_ceil_z * eps11[np.int64(x[p]), floor_y[p], floor_z[p]] 
+      tens[p,0,1] = floor_y_floor_z * eps12[np.int64(x[p]), ceil_y[p], ceil_z[p]] \
+           + ceil_y_floor_z * eps12[np.int64(x[p]), floor_y[p], ceil_z[p]] \
+           + floor_y_ceil_z * eps12[np.int64(x[p]), ceil_y[p], floor_z[p]] \
+           + ceil_y_ceil_z * eps12[np.int64(x[p]), floor_y[p], floor_z[p]] 
+      tens[p,1,0] = tens[p,0,1]
+      tens[p,0,2] = floor_y_floor_z * eps13[np.int64(x[p]), ceil_y[p], ceil_z[p]] \
+           + ceil_y_floor_z * eps13[np.int64(x[p]), floor_y[p], ceil_z[p]] \
+           + floor_y_ceil_z * eps13[np.int64(x[p]), ceil_y[p], floor_z[p]] \
+           + ceil_y_ceil_z * eps13[np.int64(x[p]), floor_y[p], floor_z[p]] 
+      tens[p,2,0] = tens[p,0,2]
+      tens[p,1,1] = floor_y_floor_z * eps22[np.int64(x[p]), ceil_y[p], ceil_z[p]] \
+           + ceil_y_floor_z * eps22[np.int64(x[p]), floor_y[p], ceil_z[p]] \
+           + floor_y_ceil_z * eps22[np.int64(x[p]), ceil_y[p], floor_z[p]] \
+           + ceil_y_ceil_z * eps22[np.int64(x[p]), floor_y[p], floor_z[p]] 
+      tens[p,1,2] = floor_y_floor_z * eps23[np.int64(x[p]), ceil_y[p], ceil_z[p]] \
+           + ceil_y_floor_z * eps23[np.int64(x[p]), floor_y[p], ceil_z[p]] \
+           + floor_y_ceil_z * eps23[np.int64(x[p]), ceil_y[p], floor_z[p]] \
+           + ceil_y_ceil_z * eps23[np.int64(x[p]), floor_y[p], floor_z[p]] 
+      tens[p,2,1] = tens[p,1,2]
+      tens[p,2,2] = floor_y_floor_z * eps33[np.int64(x[p]), ceil_y[p], ceil_z[p]] \
+           + ceil_y_floor_z * eps33[np.int64(x[p]), floor_y[p], ceil_z[p]] \
+           + floor_y_ceil_z * eps33[np.int64(x[p]), ceil_y[p], floor_z[p]] \
+           + ceil_y_ceil_z * eps33[np.int64(x[p]), floor_y[p], floor_z[p]] 
+    elif x[p] == floor_x[p] and y[p] == floor_y[p] and z[p] != floor_z[p]:
+      tens[p,0,0] = z_minus_floor_z[p] * eps11[np.int64(x[p]), np.int64(y[p]), ceil_z[p]] \
+           + z_minus_ceil_z[p] * eps11[np.int64(x[p]), np.int64(y[p]), floor_z[p]]
+      tens[p,0,1] = z_minus_floor_z[p] * eps12[np.int64(x[p]), np.int64(y[p]), ceil_z[p]] \
+           + z_minus_ceil_z[p] * eps12[np.int64(x[p]), np.int64(y[p]), floor_z[p]]
+      tens[p,1,0] = tens[p,0,1]
+      tens[p,0,2] = z_minus_floor_z[p] * eps13[np.int64(x[p]), np.int64(y[p]), ceil_z[p]] \
+           + z_minus_ceil_z[p] * eps13[np.int64(x[p]), np.int64(y[p]), floor_z[p]]
+      tens[p,2,0] = tens[p,0,2]
+      tens[p,1,1] = z_minus_floor_z[p] * eps22[np.int64(x[p]), np.int64(y[p]), ceil_z[p]] \
+           + z_minus_ceil_z[p] * eps22[np.int64(x[p]), np.int64(y[p]), floor_z[p]]
+      tens[p,1,2] = z_minus_floor_z[p] * eps23[np.int64(x[p]), np.int64(y[p]), ceil_z[p]] \
+           + z_minus_ceil_z[p] * eps23[np.int64(x[p]), np.int64(y[p]), floor_z[p]]
+      tens[p,2,1] = tens[p,1,2]
+      tens[p,2,2] = z_minus_floor_z[p] * eps33[np.int64(x[p]), np.int64(y[p]), ceil_z[p]] \
+           + z_minus_ceil_z[p] * eps33[np.int64(x[p]), np.int64(y[p]), floor_z[p]]
+    elif x[p] != floor_x[p] and y[p] == floor_y[p] and z[p] != floor_z[p]:
+      floor_x_floor_z = x_minus_floor_x[p] * z_minus_floor_z[p]
+      floor_x_ceil_z = x_minus_floor_x[p] * z_minus_ceil_z[p]
+      ceil_x_floor_z = x_minus_ceil_x[p] * z_minus_floor_z[p]
+      ceil_x_ceil_z = x_minus_ceil_x[p] * z_minus_ceil_z[p]
+      
+      tens[p,0,0] = floor_x_floor_z * eps11[ceil_x[p], np.int64(y[p]), ceil_z[p]] \
+           + ceil_x_floor_z * eps11[floor_x[p], np.int64(y[p]), ceil_z[p]] \
+           + floor_x_ceil_z * eps11[ceil_x[p], np.int64(y[p]), floor_z[p]] \
+           + ceil_x_ceil_z * eps11[floor_x[p], np.int64(y[p]), floor_z[p]] 
+      tens[p,0,1] = floor_x_floor_z * eps12[ceil_x[p], np.int64(y[p]), ceil_z[p]] \
+           + ceil_x_floor_z * eps12[floor_x[p], np.int64(y[p]), ceil_z[p]] \
+           + floor_x_ceil_z * eps12[ceil_x[p], np.int64(y[p]), floor_z[p]] \
+           + ceil_x_ceil_z * eps12[floor_x[p], np.int64(y[p]), floor_z[p]] 
+      tens[p,1,0] = tens[p,0,1]
+      tens[p,0,2] = floor_x_floor_z * eps13[ceil_x[p], np.int64(y[p]), ceil_z[p]] \
+           + ceil_x_floor_z * eps13[floor_x[p], np.int64(y[p]), ceil_z[p]] \
+           + floor_x_ceil_z * eps13[ceil_x[p], np.int64(y[p]), floor_z[p]] \
+           + ceil_x_ceil_z * eps13[floor_x[p], np.int64(y[p]), floor_z[p]] 
+      tens[p,2,0] = tens[p,0,2]
+      tens[p,1,1] = floor_x_floor_z * eps22[ceil_x[p], np.int64(y[p]), ceil_z[p]] \
+           + ceil_x_floor_z * eps22[floor_x[p], np.int64(y[p]), ceil_z[p]] \
+           + floor_x_ceil_z * eps22[ceil_x[p], np.int64(y[p]), floor_z[p]] \
+           + ceil_x_ceil_z * eps22[floor_x[p], np.int64(y[p]), floor_z[p]] 
+      tens[p,1,2] = floor_x_floor_z * eps23[ceil_x[p], np.int64(y[p]), ceil_z[p]] \
+           + ceil_x_floor_z * eps23[floor_x[p], np.int64(y[p]), ceil_z[p]] \
+           + floor_x_ceil_z * eps23[ceil_x[p], np.int64(y[p]), floor_z[p]] \
+           + ceil_x_ceil_z * eps23[floor_x[p], np.int64(y[p]), floor_z[p]] 
+      tens[p,2,1] = tens[p,1,2]
+      tens[p,2,2] = floor_x_floor_z * eps33[ceil_x[p], np.int64(y[p]), ceil_z[p]] \
+           + ceil_x_floor_z * eps33[floor_x[p], np.int64(y[p]), ceil_z[p]] \
+           + floor_x_ceil_z * eps33[ceil_x[p], np.int64(y[p]), floor_z[p]] \
+           + ceil_x_ceil_z * eps33[floor_x[p], np.int64(y[p]), floor_z[p]] 
+    elif x[p] != floor_x[p] and y[p] == floor_y[p] and z[p] == floor_z[p]:
+      tens[p,0,0] = x_minus_floor_x[p] * eps11[ceil_x[p], np.int64(y[p]), np.int64(z[p])] \
+           + x_minus_ceil_x[p] * eps11[floor_x[p], np.int64(y[p]), np.int64(z[p])]
+      tens[p,0,1] = x_minus_floor_x[p] * eps12[ceil_x[p], np.int64(y[p]), np.int64(z[p])] \
+           + x_minus_ceil_x[p] * eps12[floor_x[p], np.int64(y[p]), np.int64(z[p])]
+      tens[p,1,0] = tens[p,0,1]
+      tens[p,0,2] = x_minus_floor_x[p] * eps13[ceil_x[p], np.int64(y[p]), np.int64(z[p])] \
+           + x_minus_ceil_x[p] * eps13[floor_x[p], np.int64(y[p]), np.int64(z[p])]
+      tens[p,2,0] = tens[p,0,2]
+      tens[p,1,1] = x_minus_floor_x[p] * eps22[ceil_x[p], np.int64(y[p]), np.int64(z[p])] \
+           + x_minus_ceil_x[p] * eps22[floor_x[p], np.int64(y[p]), np.int64(z[p])]
+      tens[p,1,2] = x_minus_floor_x[p] * eps23[ceil_x[p], np.int64(y[p]), np.int64(z[p])] \
+           + x_minus_ceil_x[p] * eps23[floor_x[p], np.int64(y[p]), np.int64(z[p])]
+      tens[p,2,1] = tens[p,1,2]
+      tens[p,2,2] = x_minus_floor_x[p] * eps33[ceil_x[p], np.int64(y[p]), np.int64(z[p])] \
+           + x_minus_ceil_x[p] * eps33[floor_x[p], np.int64(y[p]), np.int64(z[p])]
+    elif x[p] != floor_x[p] and y[p] != floor_y[p] and z[p] == floor_z[p]:
+      floor_x_floor_y = x_minus_floor_x[p] * y_minus_floor_y[p]
+      floor_x_ceil_y = x_minus_floor_x[p] * y_minus_ceil_y[p]
+      ceil_x_floor_y = x_minus_ceil_x[p] * y_minus_floor_y[p]
+      ceil_x_ceil_y = x_minus_ceil_x[p] * y_minus_ceil_y[p]
+      
+      tens[p,0,0] = floor_x_floor_y * eps11[ceil_x[p], ceil_y[p], np.int64(z[p])] \
+           + ceil_x_floor_y * eps11[floor_x[p], ceil_y[p], np.int64(z[p])] \
+           + floor_x_ceil_y * eps11[ceil_x[p], floor_y[p], np.int64(z[p])] \
+           + ceil_x_ceil_y * eps11[floor_x[p], floor_y[p], np.int64(z[p])] 
+      tens[p,0,1] = floor_x_floor_y * eps12[ceil_x[p], ceil_y[p], np.int64(z[p])] \
+           + ceil_x_floor_y * eps12[floor_x[p], ceil_y[p], np.int64(z[p])] \
+           + floor_x_ceil_y * eps12[ceil_x[p], floor_y[p], np.int64(z[p])] \
+           + ceil_x_ceil_y * eps12[floor_x[p], floor_y[p], np.int64(z[p])] 
+      tens[p,1,0] = tens[p,0,1]
+      tens[p,0,2] = floor_x_floor_y * eps13[ceil_x[p], ceil_y[p], np.int64(z[p])] \
+           + ceil_x_floor_y * eps13[floor_x[p], ceil_y[p], np.int64(z[p])] \
+           + floor_x_ceil_y * eps13[ceil_x[p], floor_y[p], np.int64(z[p])] \
+           + ceil_x_ceil_y * eps13[floor_x[p], floor_y[p], np.int64(z[p])] 
+      tens[p,2,0] = tens[p,0,2]
+      tens[p,1,1] = floor_x_floor_y * eps22[ceil_x[p], ceil_y[p], np.int64(z[p])] \
+           + ceil_x_floor_y * eps22[floor_x[p], ceil_y[p], np.int64(z[p])] \
+           + floor_x_ceil_y * eps22[ceil_x[p], floor_y[p], np.int64(z[p])] \
+           + ceil_x_ceil_y * eps22[floor_x[p], floor_y[p], np.int64(z[p])] 
+      tens[p,1,2] = floor_x_floor_y * eps23[ceil_x[p], ceil_y[p], np.int64(z[p])] \
+           + ceil_x_floor_y * eps23[floor_x[p], ceil_y[p], np.int64(z[p])] \
+           + floor_x_ceil_y * eps23[ceil_x[p], floor_y[p], np.int64(z[p])] \
+           + ceil_x_ceil_y * eps23[floor_x[p], floor_y[p], np.int64(z[p])] 
+      tens[p,2,1] = tens[p,1,2]
+      tens[p,2,2] = floor_x_floor_y * eps33[ceil_x[p], ceil_y[p], np.int64(z[p])] \
+           + ceil_x_floor_y * eps33[floor_x[p], ceil_y[p], np.int64(z[p])] \
+           + floor_x_ceil_y * eps33[ceil_x[p], floor_y[p], np.int64(z[p])] \
+           + ceil_x_ceil_y * eps33[floor_x[p], floor_y[p], np.int64(z[p])] 
+    elif x[p] == floor_x[p] and y[p] != floor_y[p] and z[p] == floor_z[p]:
+      tens[p,0,0] = y_minus_floor_y[p] * eps11[np.int64(x[p]), ceil_y[p], np.int64(z[p])] \
+           + y_minus_ceil_y[p] * eps11[np.int64(x[p]), floor_y[p], np.int64(z[p])]
+      tens[p,0,1] = y_minus_floor_y[p] * eps12[np.int64(x[p]), ceil_y[p], np.int64(z[p])] \
+           + y_minus_ceil_y[p] * eps12[np.int64(x[p]), floor_y[p], np.int64(z[p])]
+      tens[p,1,0] = tens[p,0,1]
+      tens[p,0,2] = y_minus_floor_y[p] * eps13[np.int64(x[p]), ceil_y[p], np.int64(z[p])] \
+           + y_minus_ceil_y[p] * eps13[np.int64(x[p]), floor_y[p], np.int64(z[p])]
+      tens[p,2,0] = tens[p,0,2]
+      tens[p,1,1] = y_minus_floor_y[p] * eps22[np.int64(x[p]), ceil_y[p], np.int64(z[p])] \
+           + y_minus_ceil_y[p] * eps22[np.int64(x[p]), floor_y[p], np.int64(z[p])]
+      tens[p,1,2] = y_minus_floor_y[p] * eps23[np.int64(x[p]), ceil_y[p], np.int64(z[p])] \
+           + y_minus_ceil_y[p] * eps23[np.int64(x[p]), floor_y[p], np.int64(z[p])]
+      tens[p,2,1] = tens[p,1,2]
+      tens[p,2,2] = y_minus_floor_y[p] * eps33[np.int64(x[p]), ceil_y[p], np.int64(z[p])] \
+           + y_minus_ceil_y[p] * eps33[np.int64(x[p]), floor_y[p], np.int64(z[p])]
+    else:
+      floor_x_floor_y = x_minus_floor_x[p] * y_minus_floor_y[p]
+      floor_x_floor_y_floor_z = floor_x_floor_y * z_minus_floor_z[p]
+      floor_x_floor_y_ceil_z = floor_x_floor_y * z_minus_ceil_z[p]
+      floor_x_ceil_y = x_minus_floor_x[p] * y_minus_ceil_y[p]
+      floor_x_ceil_y_floor_z = floor_x_ceil_y * z_minus_floor_z[p]
+      floor_x_ceil_y_ceil_z = floor_x_ceil_y * z_minus_ceil_z[p]
+      ceil_x_floor_y = x_minus_ceil_x[p] * y_minus_floor_y[p]
+      ceil_x_floor_y_floor_z = ceil_x_floor_y * z_minus_floor_z[p]
+      ceil_x_floor_y_ceil_z = ceil_x_floor_y * z_minus_ceil_z[p]
+      ceil_x_ceil_y = x_minus_ceil_x[p] * y_minus_ceil_y[p]
+      ceil_x_ceil_y_floor_z = ceil_x_ceil_y * z_minus_floor_z[p]
+      ceil_x_ceil_y_ceil_z = ceil_x_ceil_y * z_minus_ceil_z[p]
+
+      tens[p,0,0] = floor_x_floor_y_floor_z * eps11[ceil_x[p], ceil_y[p], ceil_z[p]] \
+           + floor_x_ceil_y_floor_z * eps11[ceil_x[p], floor_y[p], ceil_z[p]] \
+           + ceil_x_floor_y_floor_z * eps11[floor_x[p], ceil_y[p], ceil_z[p]] \
+           + ceil_x_ceil_y_floor_z * eps11[floor_x[p], floor_y[p], ceil_z[p]] \
+           + floor_x_floor_y_ceil_z * eps11[ceil_x[p], ceil_y[p], floor_z[p]] \
+           + floor_x_ceil_y_ceil_z * eps11[ceil_x[p], floor_y[p], floor_z[p]] \
+           + ceil_x_floor_y_ceil_z * eps11[floor_x[p], ceil_y[p], floor_z[p]] \
+           + ceil_x_ceil_y_ceil_z * eps11[floor_x[p], floor_y[p], floor_z[p]]
+      tens[p,0,1] = floor_x_floor_y_floor_z * eps12[ceil_x[p], ceil_y[p], ceil_z[p]] \
+           + floor_x_ceil_y_floor_z * eps12[ceil_x[p], floor_y[p], ceil_z[p]] \
+           + ceil_x_floor_y_floor_z * eps12[floor_x[p], ceil_y[p], ceil_z[p]] \
+           + ceil_x_ceil_y_floor_z * eps12[floor_x[p], floor_y[p], ceil_z[p]] \
+           + floor_x_floor_y_ceil_z * eps12[ceil_x[p], ceil_y[p], floor_z[p]] \
+           + floor_x_ceil_y_ceil_z * eps12[ceil_x[p], floor_y[p], floor_z[p]] \
+           + ceil_x_floor_y_ceil_z * eps12[floor_x[p], ceil_y[p], floor_z[p]] \
+           + ceil_x_ceil_y_ceil_z * eps12[floor_x[p], floor_y[p], floor_z[p]]
+      tens[p,1,0] = tens[p,0,1]
+      tens[p,0,2] = floor_x_floor_y_floor_z * eps13[ceil_x[p], ceil_y[p], ceil_z[p]] \
+           + floor_x_ceil_y_floor_z * eps13[ceil_x[p], floor_y[p], ceil_z[p]] \
+           + ceil_x_floor_y_floor_z * eps13[floor_x[p], ceil_y[p], ceil_z[p]] \
+           + ceil_x_ceil_y_floor_z * eps13[floor_x[p], floor_y[p], ceil_z[p]] \
+           + floor_x_floor_y_ceil_z * eps13[ceil_x[p], ceil_y[p], floor_z[p]] \
+           + floor_x_ceil_y_ceil_z * eps13[ceil_x[p], floor_y[p], floor_z[p]] \
+           + ceil_x_floor_y_ceil_z * eps13[floor_x[p], ceil_y[p], floor_z[p]] \
+           + ceil_x_ceil_y_ceil_z * eps13[floor_x[p], floor_y[p], floor_z[p]]
+      tens[p,2,0] = tens[p,0,2]
+      tens[p,1,1] = floor_x_floor_y_floor_z * eps22[ceil_x[p], ceil_y[p], ceil_z[p]] \
+           + floor_x_ceil_y_floor_z * eps22[ceil_x[p], floor_y[p], ceil_z[p]] \
+           + ceil_x_floor_y_floor_z * eps22[floor_x[p], ceil_y[p], ceil_z[p]] \
+           + ceil_x_ceil_y_floor_z * eps22[floor_x[p], floor_y[p], ceil_z[p]] \
+           + floor_x_floor_y_ceil_z * eps22[ceil_x[p], ceil_y[p], floor_z[p]] \
+           + floor_x_ceil_y_ceil_z * eps22[ceil_x[p], floor_y[p], floor_z[p]] \
+           + ceil_x_floor_y_ceil_z * eps22[floor_x[p], ceil_y[p], floor_z[p]] \
+           + ceil_x_ceil_y_ceil_z * eps22[floor_x[p], floor_y[p], floor_z[p]]
+      tens[p,1,2] = floor_x_floor_y_floor_z * eps23[ceil_x[p], ceil_y[p], ceil_z[p]] \
+           + floor_x_ceil_y_floor_z * eps23[ceil_x[p], floor_y[p], ceil_z[p]] \
+           + ceil_x_floor_y_floor_z * eps23[floor_x[p], ceil_y[p], ceil_z[p]] \
+           + ceil_x_ceil_y_floor_z * eps23[floor_x[p], floor_y[p], ceil_z[p]] \
+           + floor_x_floor_y_ceil_z * eps23[ceil_x[p], ceil_y[p], floor_z[p]] \
+           + floor_x_ceil_y_ceil_z * eps23[ceil_x[p], floor_y[p], floor_z[p]] \
+           + ceil_x_floor_y_ceil_z * eps23[floor_x[p], ceil_y[p], floor_z[p]] \
+           + ceil_x_ceil_y_ceil_z * eps23[floor_x[p], floor_y[p], floor_z[p]]
+      tens[p,2,1] = tens[p,1,2]
+      tens[p,2,2] = floor_x_floor_y_floor_z * eps33[ceil_x[p], ceil_y[p], ceil_z[p]] \
+           + floor_x_ceil_y_floor_z * eps33[ceil_x[p], floor_y[p], ceil_z[p]] \
+           + ceil_x_floor_y_floor_z * eps33[floor_x[p], ceil_y[p], ceil_z[p]] \
+           + ceil_x_ceil_y_floor_z * eps33[floor_x[p], floor_y[p], ceil_z[p]] \
+           + floor_x_floor_y_ceil_z * eps33[ceil_x[p], ceil_y[p], floor_z[p]] \
+           + floor_x_ceil_y_ceil_z * eps33[ceil_x[p], floor_y[p], floor_z[p]] \
+           + ceil_x_floor_y_ceil_z * eps33[floor_x[p], ceil_y[p], floor_z[p]] \
+           + ceil_x_ceil_y_ceil_z * eps33[floor_x[p], floor_y[p], floor_z[p]]
+  
+  return (tens)
+# end batch_tens_interp_3d
+
+def batch_tens_interp_3d_torch(x, y, z, tensor_field):
+  num_tens = x.shape[0]
+  tens = torch.zeros((num_tens, 3, 3),dtype=tensor_field.dtype)
+  eps11 = tensor_field[0, :, :, :]
+  eps12 = tensor_field[1, :, :, :]
+  eps13 = tensor_field[2, :, :, :]
+  eps22 = tensor_field[3, :, :, :]
+  eps23 = tensor_field[4, :, :, :]
+  eps33 = tensor_field[5, :, :, :]
+
+  try:
+    # Want to do torch.where(x<0,0,x), but get strange type promotion errors ala
+    # https://github.com/pytorch/pytorch/issues/9190
+    # hence the messy torch.tensor syntax
+    x = torch.where(x<0,torch.tensor(0,dtype=x.dtype),x)
+    x = torch.where(x>=eps11.shape[0]-1,torch.tensor(eps11.shape[0]-1,dtype=x.dtype),x)
+    y = torch.where(y<0,torch.tensor(0,dtype=y.dtype),y)
+    y = torch.where(y>=eps11.shape[1]-1,torch.tensor(eps11.shape[1]-1,dtype=y.dtype),y)
+    z = torch.where(z<0,torch.tensor(0,dtype=z.dtype),z)
+    z = torch.where(z>=eps11.shape[2]-1,torch.tensor(eps11.shape[2]-1,dtype=z.dtype),z)
+  except Exception as err:
+    print('Caught Exception:', err)
+    print('x dtype',x.dtype)
+    print('torch.where(x<0,0,x).dtype', torch.where(x<0,0,x).dtype)
+    raise
+
+  # Casting to double here because of this torch issue
+  # https://github.com/pytorch/pytorch/issues/51199
+  ceil_x = torch.ceil(x.double()).long()
+  floor_x = torch.floor(x.double()).long()
+  ceil_y = torch.ceil(y.double()).long()
+  floor_y = torch.floor(y.double()).long()
+  ceil_z = torch.ceil(z.double()).long()
+  floor_z = torch.floor(z.double()).long()
+  x_minus_floor_x = torch.abs(x - floor_x)
+  x_minus_ceil_x = torch.abs(x - ceil_x)
+  y_minus_floor_y = torch.abs(y - floor_y)
+  y_minus_ceil_y = torch.abs(y - ceil_y)
+  z_minus_floor_z = torch.abs(z - floor_z)
+  z_minus_ceil_z = torch.abs(z - ceil_z)
+
+  # Find index where interpolation is needed and interpolate
+  intidx = torch.where((x_minus_floor_x + x_minus_ceil_x
+               + y_minus_floor_y + y_minus_ceil_y
+               + z_minus_floor_z + z_minus_ceil_z) >= 1e-14)
+  try:
+    if len(intidx[0]) > 0:
+      tens[intidx[0][:],0,0] = x_minus_floor_x[intidx] * y_minus_floor_y[intidx] * z_minus_floor_z[intidx] * eps11[ceil_x[intidx], ceil_y[intidx], ceil_z[intidx]] \
+           + x_minus_floor_x[intidx] * y_minus_ceil_y[intidx] * z_minus_floor_z[intidx] * eps11[ceil_x[intidx], floor_y[intidx], ceil_z[intidx]] \
+           + x_minus_ceil_x[intidx] * y_minus_floor_y[intidx] * z_minus_floor_z[intidx] * eps11[floor_x[intidx], ceil_y[intidx], ceil_z[intidx]] \
+           + x_minus_ceil_x[intidx] * y_minus_ceil_y[intidx] * z_minus_floor_z[intidx] * eps11[floor_x[intidx], floor_y[intidx], ceil_z[intidx]] \
+           + x_minus_floor_x[intidx] * y_minus_floor_y[intidx] * z_minus_ceil_z[intidx] * eps11[ceil_x[intidx], ceil_y[intidx], floor_z[intidx]] \
+           + x_minus_floor_x[intidx] * y_minus_ceil_y[intidx] * z_minus_ceil_z[intidx] * eps11[ceil_x[intidx], floor_y[intidx], floor_z[intidx]] \
+           + x_minus_ceil_x[intidx] * y_minus_floor_y[intidx] * z_minus_ceil_z[intidx] * eps11[floor_x[intidx], ceil_y[intidx], floor_z[intidx]] \
+           + x_minus_ceil_x[intidx] * y_minus_ceil_y[intidx] * z_minus_ceil_z[intidx] * eps11[floor_x[intidx], floor_y[intidx], floor_z[intidx]]
+      tens[intidx[0][:],0,1] = x_minus_floor_x[intidx] * y_minus_floor_y[intidx] * z_minus_floor_z[intidx] * eps12[ceil_x[intidx], ceil_y[intidx], ceil_z[intidx]] \
+           + x_minus_floor_x[intidx] * y_minus_ceil_y[intidx] * z_minus_floor_z[intidx] * eps12[ceil_x[intidx], floor_y[intidx], ceil_z[intidx]] \
+           + x_minus_ceil_x[intidx] * y_minus_floor_y[intidx] * z_minus_floor_z[intidx] * eps12[floor_x[intidx], ceil_y[intidx], ceil_z[intidx]] \
+           + x_minus_ceil_x[intidx] * y_minus_ceil_y[intidx] * z_minus_floor_z[intidx] * eps12[floor_x[intidx], floor_y[intidx], ceil_z[intidx]] \
+           + x_minus_floor_x[intidx] * y_minus_floor_y[intidx] * z_minus_ceil_z[intidx] * eps12[ceil_x[intidx], ceil_y[intidx], floor_z[intidx]] \
+           + x_minus_floor_x[intidx] * y_minus_ceil_y[intidx] * z_minus_ceil_z[intidx] * eps12[ceil_x[intidx], floor_y[intidx], floor_z[intidx]] \
+           + x_minus_ceil_x[intidx] * y_minus_floor_y[intidx] * z_minus_ceil_z[intidx] * eps12[floor_x[intidx], ceil_y[intidx], floor_z[intidx]] \
+           + x_minus_ceil_x[intidx] * y_minus_ceil_y[intidx] * z_minus_ceil_z[intidx] * eps12[floor_x[intidx], floor_y[intidx], floor_z[intidx]]
+      tens[intidx[0][:],1,0] = tens[intidx[0][:],0,1]
+      tens[intidx[0][:],0,2] = x_minus_floor_x[intidx] * y_minus_floor_y[intidx] * z_minus_floor_z[intidx] * eps13[ceil_x[intidx], ceil_y[intidx], ceil_z[intidx]] \
+           + x_minus_floor_x[intidx] * y_minus_ceil_y[intidx] * z_minus_floor_z[intidx] * eps13[ceil_x[intidx], floor_y[intidx], ceil_z[intidx]] \
+           + x_minus_ceil_x[intidx] * y_minus_floor_y[intidx] * z_minus_floor_z[intidx] * eps13[floor_x[intidx], ceil_y[intidx], ceil_z[intidx]] \
+           + x_minus_ceil_x[intidx] * y_minus_ceil_y[intidx] * z_minus_floor_z[intidx] * eps13[floor_x[intidx], floor_y[intidx], ceil_z[intidx]] \
+           + x_minus_floor_x[intidx] * y_minus_floor_y[intidx] * z_minus_ceil_z[intidx] * eps13[ceil_x[intidx], ceil_y[intidx], floor_z[intidx]] \
+           + x_minus_floor_x[intidx] * y_minus_ceil_y[intidx] * z_minus_ceil_z[intidx] * eps13[ceil_x[intidx], floor_y[intidx], floor_z[intidx]] \
+           + x_minus_ceil_x[intidx] * y_minus_floor_y[intidx] * z_minus_ceil_z[intidx] * eps13[floor_x[intidx], ceil_y[intidx], floor_z[intidx]] \
+           + x_minus_ceil_x[intidx] * y_minus_ceil_y[intidx] * z_minus_ceil_z[intidx] * eps13[floor_x[intidx], floor_y[intidx], floor_z[intidx]]
+      tens[intidx[0][:],2,0] = tens[intidx[0][:],0,2]
+      tens[intidx[0][:],1,1] = x_minus_floor_x[intidx] * y_minus_floor_y[intidx] * z_minus_floor_z[intidx] * eps22[ceil_x[intidx], ceil_y[intidx], ceil_z[intidx]] \
+           + x_minus_floor_x[intidx] * y_minus_ceil_y[intidx] * z_minus_floor_z[intidx] * eps22[ceil_x[intidx], floor_y[intidx], ceil_z[intidx]] \
+           + x_minus_ceil_x[intidx] * y_minus_floor_y[intidx] * z_minus_floor_z[intidx] * eps22[floor_x[intidx], ceil_y[intidx], ceil_z[intidx]] \
+           + x_minus_ceil_x[intidx] * y_minus_ceil_y[intidx] * z_minus_floor_z[intidx] * eps22[floor_x[intidx], floor_y[intidx], ceil_z[intidx]] \
+           + x_minus_floor_x[intidx] * y_minus_floor_y[intidx] * z_minus_ceil_z[intidx] * eps22[ceil_x[intidx], ceil_y[intidx], floor_z[intidx]] \
+           + x_minus_floor_x[intidx] * y_minus_ceil_y[intidx] * z_minus_ceil_z[intidx] * eps22[ceil_x[intidx], floor_y[intidx], floor_z[intidx]] \
+           + x_minus_ceil_x[intidx] * y_minus_floor_y[intidx] * z_minus_ceil_z[intidx] * eps22[floor_x[intidx], ceil_y[intidx], floor_z[intidx]] \
+           + x_minus_ceil_x[intidx] * y_minus_ceil_y[intidx] * z_minus_ceil_z[intidx] * eps22[floor_x[intidx], floor_y[intidx], floor_z[intidx]]
+      tens[intidx[0][:],1,2] = x_minus_floor_x[intidx] * y_minus_floor_y[intidx] * z_minus_floor_z[intidx] * eps23[ceil_x[intidx], ceil_y[intidx], ceil_z[intidx]] \
+           + x_minus_floor_x[intidx] * y_minus_ceil_y[intidx] * z_minus_floor_z[intidx] * eps23[ceil_x[intidx], floor_y[intidx], ceil_z[intidx]] \
+           + x_minus_ceil_x[intidx] * y_minus_floor_y[intidx] * z_minus_floor_z[intidx] * eps23[floor_x[intidx], ceil_y[intidx], ceil_z[intidx]] \
+           + x_minus_ceil_x[intidx] * y_minus_ceil_y[intidx] * z_minus_floor_z[intidx] * eps23[floor_x[intidx], floor_y[intidx], ceil_z[intidx]] \
+           + x_minus_floor_x[intidx] * y_minus_floor_y[intidx] * z_minus_ceil_z[intidx] * eps23[ceil_x[intidx], ceil_y[intidx], floor_z[intidx]] \
+           + x_minus_floor_x[intidx] * y_minus_ceil_y[intidx] * z_minus_ceil_z[intidx] * eps23[ceil_x[intidx], floor_y[intidx], floor_z[intidx]] \
+           + x_minus_ceil_x[intidx] * y_minus_floor_y[intidx] * z_minus_ceil_z[intidx] * eps23[floor_x[intidx], ceil_y[intidx], floor_z[intidx]] \
+           + x_minus_ceil_x[intidx] * y_minus_ceil_y[intidx] * z_minus_ceil_z[intidx] * eps23[floor_x[intidx], floor_y[intidx], floor_z[intidx]]
+      tens[intidx[0][:],2,1] = tens[intidx[0][:],1,2]
+      tens[intidx[0][:],2,2] = x_minus_floor_x[intidx] * y_minus_floor_y[intidx] * z_minus_floor_z[intidx] * eps33[ceil_x[intidx], ceil_y[intidx], ceil_z[intidx]] \
+           + x_minus_floor_x[intidx] * y_minus_ceil_y[intidx] * z_minus_floor_z[intidx] * eps33[ceil_x[intidx], floor_y[intidx], ceil_z[intidx]] \
+           + x_minus_ceil_x[intidx] * y_minus_floor_y[intidx] * z_minus_floor_z[intidx] * eps33[floor_x[intidx], ceil_y[intidx], ceil_z[intidx]] \
+           + x_minus_ceil_x[intidx] * y_minus_ceil_y[intidx] * z_minus_floor_z[intidx] * eps33[floor_x[intidx], floor_y[intidx], ceil_z[intidx]] \
+           + x_minus_floor_x[intidx] * y_minus_floor_y[intidx] * z_minus_ceil_z[intidx] * eps33[ceil_x[intidx], ceil_y[intidx], floor_z[intidx]] \
+           + x_minus_floor_x[intidx] * y_minus_ceil_y[intidx] * z_minus_ceil_z[intidx] * eps33[ceil_x[intidx], floor_y[intidx], floor_z[intidx]] \
+           + x_minus_ceil_x[intidx] * y_minus_floor_y[intidx] * z_minus_ceil_z[intidx] * eps33[floor_x[intidx], ceil_y[intidx], floor_z[intidx]] \
+           + x_minus_ceil_x[intidx] * y_minus_ceil_y[intidx] * z_minus_ceil_z[intidx] * eps33[floor_x[intidx], floor_y[intidx], floor_z[intidx]]
+  except Exception as err:
+    print('Caught Exception:', err)
+    print('intidx:',intidx)
+    print(intidx[0].shape)
+    print(torch.sum(x_minus_floor_x[intidx]))
+    print(torch.sum(eps11[ceil_x[intidx], ceil_y[intidx], ceil_z[intidx]]))
+    raise
+
+  # Find index where no interpolation is needed and just copy the values
+  nointidx = torch.where((x_minus_floor_x + x_minus_ceil_x
+               + y_minus_floor_y + y_minus_ceil_y
+               + z_minus_floor_z + z_minus_ceil_z) < 1e-14)
+
+  try:
+    if len(nointidx[0]) > 0:
+      # Since x == floor_x, y == floor_y and z == floor_z in this case, use them to index to avoid type error
+      # IndexError: tensors used as indices must be long, byte or bool tensors
+      tens[nointidx[0][:],0,0] = eps11[floor_x[nointidx],floor_y[nointidx],floor_z[nointidx]]
+      tens[nointidx[0][:],0,1] = eps12[floor_x[nointidx],floor_y[nointidx],floor_z[nointidx]]
+      tens[nointidx[0][:],1,0] = tens[nointidx[0][:],0,1]
+      tens[nointidx[0][:],0,2] = eps13[floor_x[nointidx],floor_y[nointidx],floor_z[nointidx]]
+      tens[nointidx[0][:],2,0] = tens[nointidx[0][:],0,2]
+      tens[nointidx[0][:],1,1] = eps22[floor_x[nointidx],floor_y[nointidx],floor_z[nointidx]]
+      tens[nointidx[0][:],1,2] = eps23[floor_x[nointidx],floor_y[nointidx],floor_z[nointidx]]
+      tens[nointidx[0][:],2,1] = tens[nointidx[0][:],1,2]    
+      tens[nointidx[0][:],2,2] = eps33[floor_x[nointidx],floor_y[nointidx],floor_z[nointidx]]
+  except Exception as err:
+    print('Caught Exception:', err)
+    print('nointidx:',nointidx)
+    print(nointidx[0].shape)
+    print(torch.sum(x_minus_floor_x[nointidx]))
+    print(torch.sum(eps11[ceil_x[nointidx], ceil_y[nointidx], ceil_z[nointidx]]))
+    raise
+
+  return (tens)
+# end batch_tens_interp_3d_torch
+
+
 # compute eigenvectors according to A Method for Fast Diagonalization of a 2x2 or 3x3 Real Symmetric Matrix
 # M.J. Kronenburg
 # https://www.google.com/url?sa=t&rct=j&q=&esrc=s&source=web&cd=&cad=rja&uact=8&ved=2ahUKEwj6zeiLut3qAhUPac0KHcyjDn4QFjAGegQIAxAB&url=https%3A%2F%2Farxiv.org%2Fpdf%2F1306.6291&usg=AOvVaw0BbaDECw-ghHGxek-LaB33
@@ -712,12 +1338,18 @@ def eigv_sign_deambig(eigenvecs):
 
 def make_pos_def(tens, mask, small_eval = 0.00005):
   # make any small or negative eigenvalues slightly positive and then reconstruct tensors
+  
   fw, fw_name = get_framework(tens)
   if fw_name == 'numpy':
-    evals, evecs = np.linalg.eig(tens)
+    sym_tens = (tens + tens.transpose(0,1,2,4,3))/2
+    evals, evecs = np.linalg.eig(sym_tens)
   else:
-    evals, evecs = torch.symeig(tens,eigenvectors=True)
-  #cmplx_evals, cmplx_evecs = fw.linalg.eig(tens)
+    sym_tens = (tens + torch.transpose(tens,3,4))/2
+    #evals, evecs = torch.symeig(sym_tens,eigenvectors=True)
+    evals, evecs = torch_sym3eig.Sym3Eig.apply(sym_tens.reshape((-1,3,3)))
+    evals = evals.reshape((*tens.shape[:-2],3))
+    evecs = evecs.reshape((*tens.shape[:-2],3,3))
+  #cmplx_evals, cmplx_evecs = fw.linalg.eig(sym_tens)
   #evals = fw.real(cmplx_evals)
   #evecs = fw.real(cmplx_evecs)
   #np.abs(evals, out=evals)
@@ -728,15 +1360,36 @@ def make_pos_def(tens, mask, small_eval = 0.00005):
   for ee in range(len(idx[0])):
     if mask[idx[0][ee], idx[1][ee], idx[2][ee]]:
       num_found += 1
-      evals[idx[0][ee], idx[1][ee], idx[2][ee], idx[3][ee]] = small_eval
+      # If largest eigenvalue is negative, replace with identity
+      eval_2 = (idx[3][ee]+1) % 3
+      eval_3 = (idx[3][ee]+2) % 3
+      if ((evals[idx[0][ee], idx[1][ee], idx[2][ee], eval_2] < 0) and 
+         (evals[idx[0][ee], idx[1][ee], idx[2][ee], eval_3] < 0)):
+        evecs[idx[0][ee], idx[1][ee], idx[2][ee]] = fw.eye(3, dtype=tens.dtype)
+        evals[idx[0][ee], idx[1][ee], idx[2][ee], idx[3][ee]] = small_eval
+      else:
+        # otherwise just set this eigenvalue to small_eval
+        evals[idx[0][ee], idx[1][ee], idx[2][ee], idx[3][ee]] = small_eval
 
   print(num_found, 'tensors found with eigenvalues <', small_eval)
   #print(num_found, 'tensors found with eigenvalues < 0')
   mod_tens = fw.einsum('...ij,...jk,...k,...lk->...il',
-                       evecs, fw.eye(3, dtype=fw.double), evals, evecs)
+                       evecs, fw.eye(3, dtype=tens.dtype), evals, evecs)
   #mod_tens = fw.einsum('...ij,...j,...jk->...ik',
   #                     evecs, evals, evecs)
-  return(mod_tens)
+
+  chol = batch_cholesky(mod_tens)
+  idx = fw.where(fw.isnan(chol))
+  iso_tens = small_eval * fw.eye((3))
+  for pt in range(len(idx[0])):
+    mod_tens[idx[0][pt],idx[1][pt],idx[2][pt]] = iso_tens
+
+  if fw_name == 'numpy':
+    mod_sym_tens = (mod_tens + mod_tens.transpose(0,1,2,4,3))/2
+  else:
+    mod_sym_tens = (mod_tens + torch.transpose(mod_tens,3,4))/2
+
+  return(mod_sym_tens)
     
  
 def scale_by_alpha(tensors, alpha):

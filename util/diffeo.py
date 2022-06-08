@@ -1,10 +1,12 @@
 # Some useful operations for diffeomorphisms
 
 import math
+from lazy_imports import np
 from lazy_imports import sio
 from lazy_imports import torch
 from util.tensors import direction, direction_3d
- 
+
+
 def coord_register(point_x, point_y, diffeo):
   # TODO work out which is y and which is x, maintain consistency.
   # For now, pass in y for point_x, x for point_y
@@ -33,8 +35,7 @@ def coord_register(point_x, point_y, diffeo):
   return(new_point_x, new_point_y)
 
 def coord_register_3d(point_x, point_y, point_z, diffeo):
-  # TODO work out which is y and which is x, maintain consistency.
-  # For now, pass in y for point_x, x for point_y
+  # x,y,z order is correct and as expected
   height, width, depth=diffeo.shape[-3:]
   new_point_x, new_point_y, new_point_z = [], [], []
   for i in range(len(point_x)):
@@ -71,6 +72,65 @@ def coord_register_3d(point_x, point_y, point_z, diffeo):
     + C*(1.-D)*E*diffeo[2, math.ceil(point_x[i])%height, math.floor(point_y[i])%width, math.ceil(point_z[i])%depth]\
     + C*D*E*diffeo[2, math.ceil(point_x[i])%height, math.ceil(point_y[i])%width, math.ceil(point_z[i])%depth])
   return (new_point_x, new_point_y, new_point_z)
+
+def coord_register_batch_3d(point_x, point_y, point_z, diffeo):
+  # x,y,z order is correct and as expected
+  height, width, depth=diffeo.shape[-3:]
+  num_points = len(point_x.flatten())
+  new_point_x = np.zeros_like(point_x)
+  new_point_y = np.zeros_like(point_y)
+  new_point_z = np.zeros_like(point_z)
+
+  ceil_x = np.mod(np.ceil(point_x),height).astype(np.int_)
+  floor_x = np.mod(np.floor(point_x),height).astype(np.int_)
+  ceil_y = np.mod(np.ceil(point_y),width).astype(np.int_)
+  floor_y = np.mod(np.floor(point_y),width).astype(np.int_)
+  ceil_z = np.mod(np.ceil(point_z),depth).astype(np.int_)
+  floor_z = np.mod(np.floor(point_z),depth).astype(np.int_)
+  #ceil_x = np.minimum(np.ceil(point_x),height-1).astype(np.int_)
+  #floor_x = np.maximum(np.floor(point_x),0).astype(np.int_)
+  #ceil_y = np.minimum(np.ceil(point_y),width-1).astype(np.int_)
+  #floor_y = np.maximum(np.floor(point_y),0).astype(np.int_)
+  #ceil_z = np.minimum(np.ceil(point_z),depth-1).astype(np.int_)
+  #floor_z = np.maximum(np.floor(point_z),0).astype(np.int_)
+  
+  C = np.abs(point_x - floor_x)
+  D = np.abs(point_y - floor_y)
+  E = np.abs(point_z - floor_z)
+
+  for p in range(num_points):
+    new_point_x[p] = (1.-C[p])*(1.-D[p])*(1.-E[p])*diffeo[0, floor_x[p], floor_y[p], floor_z[p]] \
+                   + (1.-C[p])*D[p]*(1.-E[p])*diffeo[0, floor_x[p], ceil_y[p], floor_z[p]]\
+                   + C[p]*(1.-D[p])*(1.-E[p])*diffeo[0, ceil_x[p], floor_y[p], floor_z[p]]\
+                   + C[p]*D[p]*(1.-E[p])*diffeo[0, ceil_x[p], ceil_y[p], floor_z[p]]\
+                   + (1.-C[p])*(1.-D[p])*E[p]*diffeo[0, floor_x[p], floor_y[p], ceil_z[p]]\
+                   + (1.-C[p])*D[p]*E[p]*diffeo[0, floor_x[p], ceil_y[p], ceil_z[p]]\
+                   + C[p]*(1.-D[p])*E[p]*diffeo[0, ceil_x[p], floor_y[p], ceil_z[p]]\
+                   + C[p]*D[p]*E[p]*diffeo[0, ceil_x[p], ceil_y[p], ceil_z[p]]
+ 
+    new_point_y[p] = (1.-C[p])*(1.-D[p])*(1.-E[p])*diffeo[1, floor_x[p], floor_y[p], floor_z[p]]\
+                   + (1.-C[p])*D[p]*(1.-E[p])*diffeo[1, floor_x[p], ceil_y[p], floor_z[p]]\
+                   + C[p]*(1.-D[p])*(1.-E[p])*diffeo[1, ceil_x[p], floor_y[p], floor_z[p]]\
+                   + C[p]*D[p]*(1.-E[p])*diffeo[1, ceil_x[p], ceil_y[p], floor_z[p]]\
+                   + (1.-C[p])*(1.-D[p])*E[p]*diffeo[1, floor_x[p], floor_y[p], ceil_z[p]]\
+                   + (1.-C[p])*D[p]*E[p]*diffeo[1, floor_x[p], ceil_y[p], ceil_z[p]]\
+                   + C[p]*(1.-D[p])*E[p]*diffeo[1, ceil_x[p], floor_y[p], ceil_z[p]]\
+                   + C[p]*D[p]*E[p]*diffeo[1, ceil_x[p], ceil_y[p], ceil_z[p]]
+ 
+    new_point_z[p] = (1.-C[p])*(1.-D[p])*(1.-E[p])*diffeo[2, floor_x[p], floor_y[p], floor_z[p]]\
+                   + (1.-C[p])*D[p]*(1.-E[p])*diffeo[2, floor_x[p], ceil_y[p], floor_z[p]]\
+                   + C[p]*(1.-D[p])*(1.-E[p])*diffeo[2, ceil_x[p], floor_y[p], floor_z[p]]\
+                   + C[p]*D[p]*(1.-E[p])*diffeo[2, ceil_x[p], ceil_y[p], floor_z[p]]\
+                   + (1.-C[p])*(1.-D[p])*E[p]*diffeo[2, floor_x[p], floor_y[p], ceil_z[p]]\
+                   + (1.-C[p])*D[p]*E[p]*diffeo[2, floor_x[p], ceil_y[p], ceil_z[p]]\
+                   + C[p]*(1.-D[p])*E[p]*diffeo[2, ceil_x[p], floor_y[p], ceil_z[p]]\
+                   + C[p]*D[p]*E[p]*diffeo[2, ceil_x[p], ceil_y[p], ceil_z[p]]
+
+    if (ceil_x[p] < point_x[p]) or (ceil_y[p] < point_y[p]) or (ceil_z[p] < point_z[p]):
+      print('Strange things at point',p,':',point_x[p],point_y[p],point_z[p],ceil_x[p],ceil_y[p],ceil_z[p])
+
+  return (new_point_x, new_point_y, new_point_z)
+
 
 def coord_velocity_register(point_x, point_y, tensor_field, delta_t, diffeo):
   # TODO work out which is y and which is x, maintain consistency.
@@ -129,7 +189,7 @@ def phi_pullback(phi, g):
 
 def phi_pullback_3d(phi, g):
 #     input: phi.shape = [3, h, w, d]; g.shape = [h, w, d, 3, 3]
-#     output: shape = [h, w, 2, 2]
+#     output: shape = [h, w, d, 3, 3]
 #     torch.set_default_tensor_type('torch.cuda.DoubleTensor')
     g = g.permute(3, 4, 0, 1, 2)
     idty = get_idty_3d(*g.shape[-3:]).to(g.device)
@@ -140,7 +200,6 @@ def phi_pullback_3d(phi, g):
     g_phi = compose_function_3d(g, phi)
     return torch.einsum("ij...,ik...,kl...->...jl", d_phi, g_phi, d_phi)
 
-  
 def get_jacobian_matrix(diffeo): # diffeo: 2 x size_h x size_w
 #     return torch.stack((get_gradient(diffeo[1]), get_gradient(diffeo[0])))
     return torch.stack((get_gradient(diffeo[0]), get_gradient(diffeo[1])))
@@ -149,7 +208,7 @@ def get_jacobian_matrix_3d(diffeo):  # diffeo: 3 x size_h x size_w x size_d
     return torch.stack((get_gradient_3d(diffeo[0]), get_gradient_3d(diffeo[1]), get_gradient_3d(diffeo[2])))#.to(device=torch.device('cuda'))
 
 def get_gradient(F):  # 2D F: size_h x size_w
-    F_padded = torch.zeros((F.shape[0]+2,F.shape[1]+2), device=F.device)
+    F_padded = torch.zeros((F.shape[0]+2,F.shape[1]+2), device=F.device)#, dtype=torch.double)
     F_padded[1:-1,1:-1] = F
     F_padded[0,:] = F_padded[1,:]
     F_padded[-1,:] = F_padded[-2,:]
@@ -157,13 +216,13 @@ def get_gradient(F):  # 2D F: size_h x size_w
     F_padded[:,-1] = F_padded[:,-2]
     F_x = (torch.roll(F_padded, shifts=(0, -1), dims=(0, 1)) - torch.roll(F_padded, shifts=(0, 1), dims=(0, 1)))/2
     F_y = (torch.roll(F_padded, shifts=(-1, 0), dims=(0, 1)) - torch.roll(F_padded, shifts=(1, 0), dims=(0, 1)))/2
-    return torch.stack((F_x[1:-1,1:-1].type(torch.DoubleTensor), F_y[1:-1,1:-1].type(torch.DoubleTensor)))
+    return torch.stack((F_x[1:-1,1:-1], F_y[1:-1,1:-1]))
 #     F_x = (torch.roll(F, shifts=(0, -1), dims=(0, 1)) - torch.roll(F, shifts=(0, 1), dims=(0, 1)))/2
 #     F_y = (torch.roll(F, shifts=(-1, 0), dims=(0, 1)) - torch.roll(F, shifts=(1, 0), dims=(0, 1)))/2
 #     return torch.stack((F_x, F_y))
 
 def get_gradient_3d(F):  # 3D F: size_h x size_w x size_d
-    F_padded = torch.zeros((F.shape[0] + 2, F.shape[1] + 2, F.shape[2] + 2), device=F.device)
+    F_padded = torch.zeros((F.shape[0] + 2, F.shape[1] + 2, F.shape[2] + 2), device=F.device)#, dtype=torch.double)
     F_padded[1:-1, 1:-1, 1:-1] = F
     F_padded[0, :, :] = F_padded[1, :, :]
     F_padded[-1, :, :] = F_padded[-2, :, :]
@@ -187,7 +246,7 @@ def get_gradient_3d(F):  # 3D F: size_h x size_w x size_d
            - torch.roll(F_padded, shifts=(0, 0, 1), dims=(0, 1, 2))) / 2
     return torch.stack((F_x[1:-1, 1:-1, 1:-1],
                         F_y[1:-1, 1:-1, 1:-1],
-                        F_z[1:-1, 1:-1, 1:-1])).type(torch.DoubleTensor)
+                        F_z[1:-1, 1:-1, 1:-1]))
 
 
 # get the identity mapping
@@ -202,7 +261,7 @@ def get_idty_3d(size_h, size_w, size_d):
                                  torch.arange(size_w),#, dtype=torch.double
                                  torch.arange(size_d)])#, dtype=torch.double
 # original and 4.3
-    return torch.stack((HH, WW, DD)).double() #.half()
+    return torch.stack((HH, WW, DD)).float()#.double() #.half()
 # 4.7
 #     return torch.stack((DD, WW, HH)).double() #.half()
   
@@ -275,38 +334,179 @@ def compose_function_3d(f, diffeo, mode='periodic'):  # f: N x h x w x d  diffeo
         F[:size_h, :size_w, -1] = f[:, :, 0]
         F[-1, -1, -1] = f[0, 0, 0]
 
-    # use the bilinear interpolation method
-    F000 = F[Ind_diffeo[0], Ind_diffeo[1], Ind_diffeo[2]].permute(*range(3, f.dim()), 0, 1, 2)
-    F010 = F[Ind_diffeo[0], Ind_diffeo[1] + 1, Ind_diffeo[2]].permute(*range(3, f.dim()), 0, 1, 2)
-    F100 = F[Ind_diffeo[0] + 1, Ind_diffeo[1], Ind_diffeo[2]].permute(*range(3, f.dim()), 0, 1, 2)
-    F110 = F[Ind_diffeo[0] + 1, Ind_diffeo[1] + 1, Ind_diffeo[2]].permute(*range(3, f.dim()), 0, 1, 2)
-    F001 = F[Ind_diffeo[0], Ind_diffeo[1], Ind_diffeo[2] + 1].permute(*range(3, f.dim()), 0, 1, 2)
-    F011 = F[Ind_diffeo[0], Ind_diffeo[1] + 1, Ind_diffeo[2] + 1].permute(*range(3, f.dim()), 0, 1, 2)
-    F101 = F[Ind_diffeo[0] + 1, Ind_diffeo[1], Ind_diffeo[2] + 1].permute(*range(3, f.dim()), 0, 1, 2)
-    F111 = F[Ind_diffeo[0] + 1, Ind_diffeo[1] + 1, Ind_diffeo[2] + 1].permute(*range(3, f.dim()), 0, 1, 2)
+    # Break up following into pieces to reduce memory usage:
+    # But do so in a way that allows back-propagation to work...
+    # # use the bilinear interpolation method
+#     F000 = F[Ind_diffeo[0], Ind_diffeo[1], Ind_diffeo[2]].permute(*range(3, f.dim()), 0, 1, 2)
+#     F010 = F[Ind_diffeo[0], Ind_diffeo[1] + 1, Ind_diffeo[2]].permute(*range(3, f.dim()), 0, 1, 2)
+#     F100 = F[Ind_diffeo[0] + 1, Ind_diffeo[1], Ind_diffeo[2]].permute(*range(3, f.dim()), 0, 1, 2)
+#     F110 = F[Ind_diffeo[0] + 1, Ind_diffeo[1] + 1, Ind_diffeo[2]].permute(*range(3, f.dim()), 0, 1, 2)
+#     F001 = F[Ind_diffeo[0], Ind_diffeo[1], Ind_diffeo[2] + 1].permute(*range(3, f.dim()), 0, 1, 2)
+#     F011 = F[Ind_diffeo[0], Ind_diffeo[1] + 1, Ind_diffeo[2] + 1].permute(*range(3, f.dim()), 0, 1, 2)
+#     F101 = F[Ind_diffeo[0] + 1, Ind_diffeo[1], Ind_diffeo[2] + 1].permute(*range(3, f.dim()), 0, 1, 2)
+#     F111 = F[Ind_diffeo[0] + 1, Ind_diffeo[1] + 1, Ind_diffeo[2] + 1].permute(*range(3, f.dim()), 0, 1, 2)
+
+# #     original and 4.3
+#     C = diffeo[0] - Ind_diffeo[0]#.type(torch.DoubleTensor)
+#     D = diffeo[1] - Ind_diffeo[1]#.type(torch.DoubleTensor)
+#     E = diffeo[2] - Ind_diffeo[2]#.type(torch.DoubleTensor)
+# # 4.7
+# #     C = diffeo[0] - Ind_diffeo[2]#.type(torch.DoubleTensor)
+# #     D = diffeo[1] - Ind_diffeo[1]#.type(torch.DoubleTensor)
+# #     E = diffeo[2] - Ind_diffeo[0]#.type(torch.DoubleTensor)
+
+#     interp_f = (1 - C) * (1 - D) * (1 - E) * F000 \
+#                + (1 - C) * D * (1 - E) * F010 \
+#                + C * (1 - D) * (1 - E) * F100 \
+#                + C * D * (1 - E) * F110 \
+#                + (1 - C) * (1 - D) * E * F001 \
+#                + (1 - C) * D * E * F011 \
+#                + C * (1 - D) * E * F101 \
+#                + C * D * E * F111
+
+    # Reduced memory usage version below.  Issues with back propagation...
 
 #     original and 4.3
     C = diffeo[0] - Ind_diffeo[0]#.type(torch.DoubleTensor)
     D = diffeo[1] - Ind_diffeo[1]#.type(torch.DoubleTensor)
     E = diffeo[2] - Ind_diffeo[2]#.type(torch.DoubleTensor)
+
 # 4.7
 #     C = diffeo[0] - Ind_diffeo[2]#.type(torch.DoubleTensor)
 #     D = diffeo[1] - Ind_diffeo[1]#.type(torch.DoubleTensor)
 #     E = diffeo[2] - Ind_diffeo[0]#.type(torch.DoubleTensor)
 
-    interp_f = (1 - C) * (1 - D) * (1 - E) * F000 \
-               + (1 - C) * D * (1 - E) * F010 \
-               + C * (1 - D) * (1 - E) * F100 \
-               + C * D * (1 - E) * F110 \
-               + (1 - C) * (1 - D) * E * F001 \
-               + (1 - C) * D * E * F011 \
-               + C * (1 - D) * E * F101 \
-               + C * D * E * F111
+   # use the bilinear interpolation method
+    #F000 = F[Ind_diffeo[0], Ind_diffeo[1], Ind_diffeo[2]].permute(*range(3, f.dim()), 0, 1, 2)
+    interp_f = (1 - C) * (1 - D) * (1 - E) * F[Ind_diffeo[0], Ind_diffeo[1], Ind_diffeo[2]].permute(*range(3, f.dim()), 0, 1, 2)
+
+    #F010 = F[Ind_diffeo[0], Ind_diffeo[1] + 1, Ind_diffeo[2]].permute(*range(3, f.dim()), 0, 1, 2)
+    interp_f += (1 - C) * D * (1 - E) * F[Ind_diffeo[0], Ind_diffeo[1] + 1, Ind_diffeo[2]].permute(*range(3, f.dim()), 0, 1, 2)
+    
+    #F100 = F[Ind_diffeo[0] + 1, Ind_diffeo[1], Ind_diffeo[2]].permute(*range(3, f.dim()), 0, 1, 2)
+    interp_f += C * (1 - D) * (1 - E) * F[Ind_diffeo[0] + 1, Ind_diffeo[1], Ind_diffeo[2]].permute(*range(3, f.dim()), 0, 1, 2) 
+    
+    #F110 = F[Ind_diffeo[0] + 1, Ind_diffeo[1] + 1, Ind_diffeo[2]].permute(*range(3, f.dim()), 0, 1, 2)
+    interp_f += C * D * (1 - E) * F[Ind_diffeo[0] + 1, Ind_diffeo[1] + 1, Ind_diffeo[2]].permute(*range(3, f.dim()), 0, 1, 2)
+    
+    #F001 = F[Ind_diffeo[0], Ind_diffeo[1], Ind_diffeo[2] + 1].permute(*range(3, f.dim()), 0, 1, 2)
+    interp_f += (1 - C) * (1 - D) * E * F[Ind_diffeo[0], Ind_diffeo[1], Ind_diffeo[2] + 1].permute(*range(3, f.dim()), 0, 1, 2)
+    
+    #F011 = F[Ind_diffeo[0], Ind_diffeo[1] + 1, Ind_diffeo[2] + 1].permute(*range(3, f.dim()), 0, 1, 2)
+    interp_f += (1 - C) * D * E * F[Ind_diffeo[0], Ind_diffeo[1] + 1, Ind_diffeo[2] + 1].permute(*range(3, f.dim()), 0, 1, 2)
+    
+    #F101 = F[Ind_diffeo[0] + 1, Ind_diffeo[1], Ind_diffeo[2] + 1].permute(*range(3, f.dim()), 0, 1, 2)
+    interp_f += C * (1 - D) * E * F[Ind_diffeo[0] + 1, Ind_diffeo[1], Ind_diffeo[2] + 1].permute(*range(3, f.dim()), 0, 1, 2)
+    
+    #F111 = F[Ind_diffeo[0] + 1, Ind_diffeo[1] + 1, Ind_diffeo[2] + 1].permute(*range(3, f.dim()), 0, 1, 2)
+    interp_f += C * D * E * F[Ind_diffeo[0] + 1, Ind_diffeo[1] + 1, Ind_diffeo[2] + 1].permute(*range(3, f.dim()), 0, 1, 2)
 
 #     del F000, F010, F100, F110, F001, F011, F101, F111, C, D, E
 #     torch.cuda.empty_cache()
     return interp_f
 
+
+# my interpolation function
+def compose_function_in_place_3d(f, diffeo, mode='periodic'):  # f: N x h x w x d  diffeo: 3 x h x w x d
+    f = f.permute(f.dim() - 3, f.dim() - 2, f.dim() - 1, *range(f.dim() - 3))  # change the size of f to m x n x ...
+    size_h, size_w, size_d = f.shape[:3]
+#     original and 4.3
+    Ind_diffeo = torch.stack((torch.floor(diffeo[0]).long() % size_h,
+                              torch.floor(diffeo[1]).long() % size_w,
+                              torch.floor(diffeo[2]).long() % size_d))#.to(device=torch.device('cuda'))
+#     4.7
+#     Ind_diffeo = torch.stack((torch.floor(diffeo[2]).long() % size_h,
+#                               torch.floor(diffeo[1]).long() % size_w,
+#                               torch.floor(diffeo[0]).long() % size_d))#.to(device=torch.device('cuda'))
+
+    F = torch.zeros(size_h + 1, size_w + 1, size_d + 1, *f.shape[3:], device=f.device)#, dtype=torch.double
+
+    if mode == 'border':
+        F[:size_h, :size_w, :size_d] = f
+        F[-1, :size_w, :size_d] = f[-1]
+        F[:size_h, -1, :size_d] = f[:, -1]
+        F[:size_h, :size_w, -1] = f[:, :, -1]
+        F[-1, -1, -1] = f[-1, -1, -1]
+    elif mode == 'periodic':
+        # extend the function values periodically (1234 1)
+        F[:size_h, :size_w, :size_d] = f
+        F[-1, :size_w, :size_d] = f[0]
+        F[:size_h, -1, :size_d] = f[:, 0]
+        F[:size_h, :size_w, -1] = f[:, :, 0]
+        F[-1, -1, -1] = f[0, 0, 0]
+
+    # Break up following into pieces to reduce memory usage:
+    # But do so in a way that allows back-propagation to work...
+    # # use the bilinear interpolation method
+#     F000 = F[Ind_diffeo[0], Ind_diffeo[1], Ind_diffeo[2]].permute(*range(3, f.dim()), 0, 1, 2)
+#     F010 = F[Ind_diffeo[0], Ind_diffeo[1] + 1, Ind_diffeo[2]].permute(*range(3, f.dim()), 0, 1, 2)
+#     F100 = F[Ind_diffeo[0] + 1, Ind_diffeo[1], Ind_diffeo[2]].permute(*range(3, f.dim()), 0, 1, 2)
+#     F110 = F[Ind_diffeo[0] + 1, Ind_diffeo[1] + 1, Ind_diffeo[2]].permute(*range(3, f.dim()), 0, 1, 2)
+#     F001 = F[Ind_diffeo[0], Ind_diffeo[1], Ind_diffeo[2] + 1].permute(*range(3, f.dim()), 0, 1, 2)
+#     F011 = F[Ind_diffeo[0], Ind_diffeo[1] + 1, Ind_diffeo[2] + 1].permute(*range(3, f.dim()), 0, 1, 2)
+#     F101 = F[Ind_diffeo[0] + 1, Ind_diffeo[1], Ind_diffeo[2] + 1].permute(*range(3, f.dim()), 0, 1, 2)
+#     F111 = F[Ind_diffeo[0] + 1, Ind_diffeo[1] + 1, Ind_diffeo[2] + 1].permute(*range(3, f.dim()), 0, 1, 2)
+
+# #     original and 4.3
+#     C = diffeo[0] - Ind_diffeo[0]#.type(torch.DoubleTensor)
+#     D = diffeo[1] - Ind_diffeo[1]#.type(torch.DoubleTensor)
+#     E = diffeo[2] - Ind_diffeo[2]#.type(torch.DoubleTensor)
+# # 4.7
+# #     C = diffeo[0] - Ind_diffeo[2]#.type(torch.DoubleTensor)
+# #     D = diffeo[1] - Ind_diffeo[1]#.type(torch.DoubleTensor)
+# #     E = diffeo[2] - Ind_diffeo[0]#.type(torch.DoubleTensor)
+
+#     f = f.permute(*range(3, f.dim()), 0, 1, 2)  # change the size of f to N x m x n x ...
+#     f[:] = (1 - C) * (1 - D) * (1 - E) * F000 \
+#                + (1 - C) * D * (1 - E) * F010 \
+#                + C * (1 - D) * (1 - E) * F100 \
+#                + C * D * (1 - E) * F110 \
+#                + (1 - C) * (1 - D) * E * F001 \
+#                + (1 - C) * D * E * F011 \
+#                + C * (1 - D) * E * F101 \
+#                + C * D * E * F111
+
+    # Reduced memory usage version below.  Issues with back propagation...
+
+#     original and 4.3
+    C = diffeo[0] - Ind_diffeo[0]#.type(torch.DoubleTensor)
+    D = diffeo[1] - Ind_diffeo[1]#.type(torch.DoubleTensor)
+    E = diffeo[2] - Ind_diffeo[2]#.type(torch.DoubleTensor)
+
+# 4.7
+#     C = diffeo[0] - Ind_diffeo[2]#.type(torch.DoubleTensor)
+#     D = diffeo[1] - Ind_diffeo[1]#.type(torch.DoubleTensor)
+#     E = diffeo[2] - Ind_diffeo[0]#.type(torch.DoubleTensor)
+
+   # use the bilinear interpolation method
+    #F000 = F[Ind_diffeo[0], Ind_diffeo[1], Ind_diffeo[2]].permute(*range(3, f.dim()), 0, 1, 2)
+    f = f.permute(*range(3, f.dim()), 0, 1, 2)  # change the size of f to N x m x n x ...
+    f[:] = (1 - C) * (1 - D) * (1 - E) * F[Ind_diffeo[0], Ind_diffeo[1], Ind_diffeo[2]].permute(*range(3, f.dim()), 0, 1, 2)
+
+    #F010 = F[Ind_diffeo[0], Ind_diffeo[1] + 1, Ind_diffeo[2]].permute(*range(3, f.dim()), 0, 1, 2)
+    f += (1 - C) * D * (1 - E) * F[Ind_diffeo[0], Ind_diffeo[1] + 1, Ind_diffeo[2]].permute(*range(3, f.dim()), 0, 1, 2)
+    
+    #F100 = F[Ind_diffeo[0] + 1, Ind_diffeo[1], Ind_diffeo[2]].permute(*range(3, f.dim()), 0, 1, 2)
+    f += C * (1 - D) * (1 - E) * F[Ind_diffeo[0] + 1, Ind_diffeo[1], Ind_diffeo[2]].permute(*range(3, f.dim()), 0, 1, 2) 
+    
+    #F110 = F[Ind_diffeo[0] + 1, Ind_diffeo[1] + 1, Ind_diffeo[2]].permute(*range(3, f.dim()), 0, 1, 2)
+    f += C * D * (1 - E) * F[Ind_diffeo[0] + 1, Ind_diffeo[1] + 1, Ind_diffeo[2]].permute(*range(3, f.dim()), 0, 1, 2)
+    
+    #F001 = F[Ind_diffeo[0], Ind_diffeo[1], Ind_diffeo[2] + 1].permute(*range(3, f.dim()), 0, 1, 2)
+    f += (1 - C) * (1 - D) * E * F[Ind_diffeo[0], Ind_diffeo[1], Ind_diffeo[2] + 1].permute(*range(3, f.dim()), 0, 1, 2)
+    
+    #F011 = F[Ind_diffeo[0], Ind_diffeo[1] + 1, Ind_diffeo[2] + 1].permute(*range(3, f.dim()), 0, 1, 2)
+    f += (1 - C) * D * E * F[Ind_diffeo[0], Ind_diffeo[1] + 1, Ind_diffeo[2] + 1].permute(*range(3, f.dim()), 0, 1, 2)
+    
+    #F101 = F[Ind_diffeo[0] + 1, Ind_diffeo[1], Ind_diffeo[2] + 1].permute(*range(3, f.dim()), 0, 1, 2)
+    f += C * (1 - D) * E * F[Ind_diffeo[0] + 1, Ind_diffeo[1], Ind_diffeo[2] + 1].permute(*range(3, f.dim()), 0, 1, 2)
+    
+    #F111 = F[Ind_diffeo[0] + 1, Ind_diffeo[1] + 1, Ind_diffeo[2] + 1].permute(*range(3, f.dim()), 0, 1, 2)
+    f += C * D * E * F[Ind_diffeo[0] + 1, Ind_diffeo[1] + 1, Ind_diffeo[2] + 1].permute(*range(3, f.dim()), 0, 1, 2)
+
+#     del F000, F010, F100, F110, F001, F011, F101, F111, C, D, E
+#     torch.cuda.empty_cache()
+    #return interp_f  
   
 
 if __name__ == "__main__":

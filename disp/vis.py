@@ -758,7 +758,7 @@ def vis_tensors(tensor_field, title, save_file=False, filename='', mask=None,sca
   ax.set_title(title)
   return(fig)
 
-def vis_path(points_x, points_y, fig=None, label='', color='b', sz=20, alpha=1, save_file=False, filename='', yscale='linear', ax=None,zorder=1,stride=None):
+def vis_path(points_x, points_y, fig=None, label='', color='b', sz=20, alpha=1, save_file=False, filename='', yscale='linear', ax=None,zorder=1,stride=None,do_legend=True):
   if ax is None:
     if fig is None:
       plt.figure()
@@ -769,7 +769,8 @@ def vis_path(points_x, points_y, fig=None, label='', color='b', sz=20, alpha=1, 
     stride=1
   ax.scatter(points_x[::stride], points_y[::stride], c=color, s=sz, alpha=alpha, label=label,zorder=zorder)
   plt.yscale(yscale)
-  ax.legend()
+  if do_legend:
+    ax.legend()
   if save_file:
     fig.savefig(filename)
     plt.close(fig)
