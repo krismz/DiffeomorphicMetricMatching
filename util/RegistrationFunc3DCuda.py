@@ -79,9 +79,12 @@ def get_idty(size_h, size_w, size_d):
 
 
 # my interpolation function
-def compose_function(f, diffeo, mode='periodic'):  # f: N x h x w x d  diffeo: 3 x h x w x d
+def compose_function(f, diffeo, mask=None, mask_value=None, mode='periodic'):  # f: N x h x w x d  diffeo: 3 x h x w x d
     f = f.permute(f.dim() - 3, f.dim() - 2, f.dim() - 1, *range(f.dim() - 3))  # change the size of f to m x n x ...
     size_h, size_w, size_d = f.shape[:3]
+    eye_shape = f.shape[3:]
+    if mask is not None and mask_value is None:
+        mask_value = torch.eye(eye_shape)
 #     original and 4.3
     Ind_diffeo = torch.stack((torch.floor(diffeo[0]).long() % size_h,
                               torch.floor(diffeo[1]).long() % size_w,
@@ -135,6 +138,26 @@ def compose_function(f, diffeo, mode='periodic'):  # f: N x h x w x d  diffeo: 3
                + C * (1 - D) * E * F101 \
                + C * D * E * F111
 
+    #print('compose_function f NaN?', f.isnan().any(), 'diffeo NaN?', diffeo.isnan().any(),
+    #      'F NaN?', F.isnan().any(), 'Ind_diffeo NaN?', Ind_diffeo.isnan().any(),
+    #      'F000 NaN?', F000.isnan().any(), 'F010 NaN?', F010.isnan().any(),
+    #      'F100 NaN?', F000.isnan().any(), 'F110 NaN?', F010.isnan().any(),
+    #      'F001 NaN?', F000.isnan().any(), 'F011 NaN?', F010.isnan().any(),
+    #      'F101 NaN?', F000.isnan().any(), 'F111 NaN?', F010.isnan().any(),
+    #      'C NaN?', C.isnan().any(), 'D NaN?', D.isnan().any(),
+    #      'E NaN?', E.isnan().any(), 'interp_f NaN?',interp_f.isnan().any())
+    #print('compose_function f Inf?', f.isinf().any(), 'diffeo Inf?', diffeo.isinf().any(),
+    #      'F Inf?', F.isinf().any(), 'Ind_diffeo Inf?', Ind_diffeo.isinf().any(),
+    #      'F000 Inf?', F000.isinf().any(), 'F010 Inf?', F010.isinf().any(),
+    #      'F100 Inf?', F000.isinf().any(), 'F110 Inf?', F010.isinf().any(),
+    #      'F001 Inf?', F000.isinf().any(), 'F011 Inf?', F010.isinf().any(),
+    #      'F101 Inf?', F000.isinf().any(), 'F111 Inf?', F010.isinf().any(),
+    #      'C Inf?', C.isinf().any(), 'D Inf?', D.isinf().any(),
+    #      'E Inf?', E.isinf().any(), 'interp_f Inf?',interp_f.isinf().any())
+
+    print("WARNING!!! mask ignored in compose_function, change signature so no longer needed to pass in")
+    #if mask is not None:
+    #    interp_f.permute(interp_f.dim() - 3, interp_f.dim() - 2, interp_f.dim() - 1, *range(interp_f.dim() - 3))[mask == 0] = mask_value
 #     del F000, F010, F100, F110, F001, F011, F101, F111, C, D, E
 #     torch.cuda.empty_cache()
     return interp_f.to(device=torch.device('cuda'))

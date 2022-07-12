@@ -3,6 +3,7 @@ import math
 # currently an incompatibility between lazy import of torch and importing torch_sym3eig
 #import torch
 #import torch_sym3eig # installed from https://github.com/nnaisense/pytorch_sym3eig
+from torch_sym3eig import Sym3Eig as se
 from lazy_imports import torch
 #from lazy_imports import torch_sym3eig # installed from https://github.com/nnaisense/pytorch_sym3eig
 from lazy_imports import np
@@ -44,8 +45,8 @@ def batch_cholesky(tens):
       for k in range(j):
         s = s + L[...,i,k] * L[...,j,k]
 
-      L[...,i,j] = fw.sqrt(tens[...,i,i] - s) if (i == j) else \
-                      (1.0 / L[...,j,j] * (tens[...,i,j] - s))
+      L[...,i,j] = fw.sqrt((tens[...,i,i] - s).clamp(min=1.0e-15)) if (i == j) else \
+                      (1.0 / L[...,j,j].clamp(min=1.0e-15) * (tens[...,i,j] - s))
   return L
 
 def smooth_tensors(tens, sigma):
@@ -1336,17 +1337,22 @@ def eigv_sign_deambig(eigenvecs):
 #     vs[:,:,:,0,0] = -vs[:,:,:,1,1] # -sin(phi)
 #     return (vs)
 
-def make_pos_def(tens, mask, small_eval = 0.00005):
+def make_pos_def(tens, mask, small_eval = 0.00005, skip_small_eval=False):
   # make any small or negative eigenvalues slightly positive and then reconstruct tensors
-  
+  print('entering tensors.make_pos_def, max(tens)', torch.max(tens))
+  det_threshold=1e-11
+  tens[torch.det(tens)<=det_threshold] = torch.eye((3))
+
   fw, fw_name = get_framework(tens)
   if fw_name == 'numpy':
-    sym_tens = (tens + tens.transpose(0,1,2,4,3))/2
+    #sym_tens = (tens + tens.transpose(0,1,2,4,3))/2
+    sym_tens = (tens + tens.transpose(len(tens.shape)-2,len(tens.shape)-1))/2
     evals, evecs = np.linalg.eig(sym_tens)
   else:
-    sym_tens = (tens + torch.transpose(tens,3,4))/2
+    #sym_tens = (tens + torch.transpose(tens,3,4))/2
+    sym_tens = (tens + torch.transpose(tens,len(tens.shape)-2,len(tens.shape)-1))/2
     #evals, evecs = torch.symeig(sym_tens,eigenvectors=True)
-    evals, evecs = torch_sym3eig.Sym3Eig.apply(sym_tens.reshape((-1,3,3)))
+    evals, evecs = se.apply(sym_tens.reshape((-1,3,3)))
     evals = evals.reshape((*tens.shape[:-2],3))
     evecs = evecs.reshape((*tens.shape[:-2],3,3))
   #cmplx_evals, cmplx_evecs = fw.linalg.eig(sym_tens)
@@ -1358,18 +1364,30 @@ def make_pos_def(tens, mask, small_eval = 0.00005):
   num_found = 0
   #print(len(idx[0]), 'tensors found with eigenvalues <', small_eval)
   for ee in range(len(idx[0])):
-    if mask[idx[0][ee], idx[1][ee], idx[2][ee]]:
+    eeidx = [idx[ii][ee] for ii in range(len(idx))]
+    if mask is None or mask[eeidx[:-1]]:
       num_found += 1
       # If largest eigenvalue is negative, replace with identity
-      eval_2 = (idx[3][ee]+1) % 3
-      eval_3 = (idx[3][ee]+2) % 3
-      if ((evals[idx[0][ee], idx[1][ee], idx[2][ee], eval_2] < 0) and 
-         (evals[idx[0][ee], idx[1][ee], idx[2][ee], eval_3] < 0)):
-        evecs[idx[0][ee], idx[1][ee], idx[2][ee]] = fw.eye(3, dtype=tens.dtype)
-        evals[idx[0][ee], idx[1][ee], idx[2][ee], idx[3][ee]] = small_eval
+      #eval_2 = (idx[3][ee]+1) % 3
+      #eval_3 = (idx[3][ee]+2) % 3
+      eval_2 = (eeidx[-1]+1) % 3
+      eval_3 = (eeidx[-1]+2) % 3
+      #if ((evals[idx[0][ee], idx[1][ee], idx[2][ee], eval_2] < 0) and 
+      #   (evals[idx[0][ee], idx[1][ee], idx[2][ee], eval_3] < 0)):
+      #  evecs[idx[0][ee], idx[1][ee], idx[2][ee]] = fw.eye(3, dtype=tens.dtype)
+      #  evals[idx[0][ee], idx[1][ee], idx[2][ee], idx[3][ee]] = small_eval
+      #else:
+      #  # otherwise just set this eigenvalue to small_eval
+      #  evals[idx[0][ee], idx[1][ee], idx[2][ee], idx[3][ee]] = small_eval
+      if ((evals[(*eeidx[:-1], eval_2)] < 0) and 
+         (evals[(*eeidx[:-1], eval_3)] < 0)):
+        evecs[eeidx[:-1]] = fw.eye(3, dtype=tens.dtype)
+        #evals[(*eeidx[:-1], eeidx[-1])] = small_eval
+        evals[eeidx] = small_eval
       else:
         # otherwise just set this eigenvalue to small_eval
-        evals[idx[0][ee], idx[1][ee], idx[2][ee], idx[3][ee]] = small_eval
+        #evals[(*eeidx[:-1], eeidx[-1])] = small_eval
+        evals[eeidx] = small_eval
 
   print(num_found, 'tensors found with eigenvalues <', small_eval)
   #print(num_found, 'tensors found with eigenvalues < 0')
@@ -1378,16 +1396,25 @@ def make_pos_def(tens, mask, small_eval = 0.00005):
   #mod_tens = fw.einsum('...ij,...j,...jk->...ik',
   #                     evecs, evals, evecs)
 
+  # Need small_eval fix for sure for inv_RieExp calculation, hence why this version is different than that in BrainAtlasBuilding3DUkfCudaImg
+  if skip_small_eval:
+    print("WARNING!!!! Ignoring small_eval fix in tensors.make_pos_def")
+    mod_tens = tens.clone()
   chol = batch_cholesky(mod_tens)
   idx = fw.where(fw.isnan(chol))
   iso_tens = small_eval * fw.eye((3))
   for pt in range(len(idx[0])):
-    mod_tens[idx[0][pt],idx[1][pt],idx[2][pt]] = iso_tens
+    #mod_tens[idx[0][pt],idx[1][pt],idx[2][pt]] = iso_tens
+    mod_tens[idx[0][pt]] = iso_tens
 
   if fw_name == 'numpy':
-    mod_sym_tens = (mod_tens + mod_tens.transpose(0,1,2,4,3))/2
+    #mod_sym_tens = (mod_tens + mod_tens.transpose(0,1,2,4,3))/2
+    mod_sym_tens = (tens + mod_tens.transpose(len(tens.shape)-2,len(tens.shape)-1))/2
   else:
-    mod_sym_tens = (mod_tens + torch.transpose(mod_tens,3,4))/2
+    mod_sym_tens = (mod_tens + torch.transpose(mod_tens,len(mod_tens.shape)-2,len(mod_tens.shape)-1))/2
+  mod_sym_tens[torch.det(mod_sym_tens)<=det_threshold] = fw.eye((3))
+
+  print('leaving tensors.make_pos_def, max(mod_sym_tens)', torch.max(mod_sym_tens))
 
   return(mod_sym_tens)
     
