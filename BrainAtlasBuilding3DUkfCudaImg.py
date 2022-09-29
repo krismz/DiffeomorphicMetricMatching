@@ -34,22 +34,20 @@ from data.convert import GetNPArrayFromSITK, GetSITKImageFromNP
 #import algo.dijkstra as dijkstra
 from torch_sym3eig import Sym3Eig as se
 
+#cuda_dev = 'cuda:0'
+cuda_dev = 'cuda:1'
 
 def phi_pullback(phi, g, mask=None):
 #     input: phi.shape = [3, h, w, d]; g.shape = [h, w, d, 3, 3]
 #     output: shape = [h, w, 2, 2]
 #     torch.set_default_tensor_type('torch.cuda.DoubleTensor')
     g = g.permute(3, 4, 0, 1, 2)
-    idty = get_idty(*g.shape[-3:])
+    idty = get_idty(*g.shape[-3:], device=cuda_dev)
     #     four layers of scalar field, of all 1, all 0, all 1, all 0, where the shape of each layer is g.shape[-2:]?
-    eye = torch.eye(3)
-    ones = torch.ones(*g.shape[-3:])
+    eye = torch.eye(3, device=cuda_dev)
+    ones = torch.ones(*g.shape[-3:], device=cuda_dev)
     d_phi = get_jacobian_matrix(phi - idty) + torch.einsum("ij,mno->ijmno", eye, ones)
-    g_phi = compose_function(g, phi, mask, eye)
-    #print('phi_pullback g NaN?', g.isnan().any(), 'idty NaN?', idty.isnan().any(),
-    #      'd_phi NaN?', d_phi.isnan().any(), 'g_phi NaN?', g_phi.isnan().any())
-    #print('phi_pullback g Inf?', g.isinf().any(), 'idty Inf?', idty.isinf().any(),
-    #      'd_phi Inf?', d_phi.isinf().any(), 'g_phi Inf?', g_phi.isinf().any())
+    g_phi = compose_function(g, phi)
     return torch.einsum("ij...,ik...,kl...->...jl", d_phi, g_phi, d_phi)
     # Problems with .backward autograd for make_pos_def
     #return(make_pos_def(torch.einsum("ij...,ik...,kl...->...jl", d_phi, g_phi, d_phi), mask))
@@ -110,7 +108,7 @@ def laplace_inverse(u):
     this function computes the laplacian inverse of a vector field u of size 3 x size_h x size_w x size_d
     '''
     size_h, size_w, size_d = u.shape[-3:]
-    idty = get_idty(size_h, size_w, size_d).cpu().numpy()
+    idty = get_idty(size_h, size_w, size_d, device='cpu').cpu().numpy()
     lap = 6. - 2. * (np.cos(2. * np.pi * idty[0] / size_h) +
                      np.cos(2. * np.pi * idty[1] / size_w) +
                      np.cos(2. * np.pi * idty[2] / size_d))
@@ -130,16 +128,16 @@ def laplace_inverse(u):
     vy = torch.from_numpy(np.real(np.fft.ifftn(fy)))
     vz = torch.from_numpy(np.real(np.fft.ifftn(fz)))
 
-    return torch.stack((vx, vy, vz)).to(device=torch.device('cuda'))
+    return torch.stack((vx, vy, vz)).to(device=torch.device(cuda_dev))
 
         
 def metric_matching(gi, gm, ii, im, height, width, depth, ith_mask, mask, iter_num, epsilon, sigma, dim):
-    phi_inv = get_idty(height, width, depth)
-    phi = get_idty(height, width, depth)
-    idty = get_idty(height, width, depth)
+    phi_inv = get_idty(height, width, depth,device=cuda_dev)
+    phi = get_idty(height, width, depth,device=cuda_dev)
+    idty = get_idty(height, width, depth,device=cuda_dev)
     idty.requires_grad_()
-    f0 = torch.eye(int(dim)).repeat(height, width, depth, 1, 1)
-    f1 = torch.eye(int(dim)).repeat(height, width, depth, 1, 1)
+    f0 = torch.eye(int(dim)).repeat(height, width, depth, 1, 1).to(cuda_dev)
+    f1 = torch.eye(int(dim)).repeat(height, width, depth, 1, 1).to(cuda_dev)
     #with torch.no_grad():
       #phi_actsg0 = make_pos_def(phi_pullback(phi_inv, gi, ith_mask), ith_mask, 1.0e-10)
       #phi_actsf0 = make_pos_def(phi_pullback(phi_inv, f0, ith_mask), ith_mask, 1.0e-10) # TODO ith_mask or mask here?
@@ -154,12 +152,12 @@ def metric_matching(gi, gm, ii, im, height, width, depth, ith_mask, mask, iter_n
     for j in range(iter_num):
         #phi_actsg0 = phi_pullback(phi_inv, gi, ith_mask)
         #phi_actsf0 = phi_pullback(phi_inv, f0, ith_mask) # TODO ith_mask or mask here?
-        phi_actsg0 = make_pos_def(phi_pullback(phi_inv, gi, ith_mask), ith_mask, 1.0e-10)
-        phi_actsf0 = make_pos_def(phi_pullback(phi_inv, f0, ith_mask), ith_mask, 1.0e-10) # TODO ith_mask or mask here?
+        phi_actsg0 = make_pos_def(phi_pullback(phi_inv, gi.to(cuda_dev), ith_mask), ith_mask, 1.0e-10)
+        phi_actsf0 = make_pos_def(phi_pullback(phi_inv, f0.to(cuda_dev), ith_mask), ith_mask, 1.0e-10) # TODO ith_mask or mask here?
         #print('\n\nmetric_matching, iter', j,', max phi acts:',torch.max(phi_actsg0), torch.max(phi_actsf0),'\n\n')
-        phi_actsi0 = compose_function(ii.unsqueeze(0), phi_inv, ith_mask, 0).squeeze()
+        phi_actsi0 = compose_function(ii.unsqueeze(0).to(cuda_dev), phi_inv, ith_mask, 0).squeeze()
         # use atlas mask for energy calculation, since in atlas space (gm, im)
-        E = energy_ebin(idty, phi_actsg0, gm, phi_actsf0, f1, phi_actsi0, im, sigma, dim, mask) 
+        E = energy_ebin(idty, phi_actsg0, gm.to(cuda_dev), phi_actsf0, f1, phi_actsi0, im.to(cuda_dev), sigma, dim, mask.to(cuda_dev)) 
         print(E.item())
         if torch.isnan(E):
             raise ValueError('NaN error')
@@ -185,16 +183,23 @@ def metric_matching(gi, gm, ii, im, height, width, depth, ith_mask, mask, iter_n
             # because mask will be applied when composing phi,phi_inv with g or i
             phi = compose_function(psi, phi) 
             phi_inv = compose_function(phi_inv, psi_inv)
-            phi_actsg0 = make_pos_def(phi_pullback(phi_inv, gi, ith_mask), ith_mask, 1.0e-10)
-            phi_actsf0 = make_pos_def(phi_pullback(phi_inv, f0, ith_mask), ith_mask, 1.0e-10) # TODO ith_mask or mask here?
+            phi_actsg0 = make_pos_def(phi_pullback(phi_inv, gi.to(cuda_dev), ith_mask), ith_mask, 1.0e-10)
+            phi_actsf0 = make_pos_def(phi_pullback(phi_inv, f0.to(cuda_dev), ith_mask), ith_mask, 1.0e-10) # TODO ith_mask or mask here?
             idty.grad.data.zero_()
             
     #gi = phi_pullback(phi_inv, gi, ith_mask)
     ith_mask = compose_function(ith_mask, phi_inv)
     ii = compose_function(ii.unsqueeze(0), phi_inv)#, ith_mask, 0)
-    gi = make_pos_def(phi_pullback(phi_inv, gi, ith_mask), ith_mask, 1.0e-10)
+    gi = make_pos_def(phi_pullback(phi_inv, gi.to(cuda_dev), ith_mask), ith_mask, 1.0e-10)
     #return gi, ii.squeeze(), phi, phi_inv
-    return gi, ii.squeeze(), ith_mask, phi, phi_inv
+    #return gi, ii.squeeze(), ith_mask, phi, phi_inv
+    gi_cpu = gi.cpu()
+    ii_cpu = ii.cpu()
+    phi_cpu = phi.cpu()
+    phi_inv_cpu = phi_inv.cpu()
+    del gi, ii, phi_actsg0, phi_actsf0, phi_actsi0, psi, psi_inv, v, idty, f0, f1, phi, phi_inv
+    torch.cuda.empty_cache()
+    return gi_cpu, ii_cpu.squeeze(), ith_mask, phi_cpu, phi_inv_cpu
 
 
 def tensor_cleaning(g, mask, iso_tens, det_threshold=1e-11):
@@ -248,10 +253,10 @@ def batch_cholesky(tens):
       for j in range(i+1):
         s = 0.0
         for k in range(j):
-          s = s + L[...,i,k] * L[...,j,k]
+          s = s + L[...,i,k].clone() * L[...,j,k].clone()
 
-        L[...,i,j] = fw.sqrt(tens[...,i,i] - s) if (i == j) else \
-                      (1.0 / L[...,j,j] * (tens[...,i,j] - s))
+        L[...,i,j] = fw.sqrt((tens[...,i,i] - s).clamp(min=1.0e-15)) if (i == j) else \
+                      (1.0 / L[...,j,j].clone().clamp(min=1.0e-15) * (tens[...,i,j] - s))
     return L
 
 
@@ -314,7 +319,7 @@ def make_pos_def(tens, mask, small_eval = 0.00005):
     #return(tens)
 
     det_threshold=1e-11
-    tens[torch.det(tens)<=det_threshold] = torch.eye((3))
+    tens[torch.det(tens)<=det_threshold] = torch.eye((3)).to(device=tens.device)
 
     fw, fw_name = get_framework(tens)
     if fw_name == 'numpy':
@@ -344,7 +349,7 @@ def make_pos_def(tens, mask, small_eval = 0.00005):
             eval_3 = (idx[3][ee]+2) % 3
             if ((evals[idx[0][ee], idx[1][ee], idx[2][ee], eval_2] < 0) and 
              (evals[idx[0][ee], idx[1][ee], idx[2][ee], eval_3] < 0)):
-                evecs[idx[0][ee], idx[1][ee], idx[2][ee]] = fw.eye(3, dtype=tens.dtype)
+                evecs[idx[0][ee], idx[1][ee], idx[2][ee]] = fw.eye(3, dtype=tens.dtype).to(device=tens.device)
                 evals[idx[0][ee], idx[1][ee], idx[2][ee], idx[3][ee]] = small_eval
             else:
                 # otherwise just set this eigenvalue to small_eval
@@ -353,7 +358,7 @@ def make_pos_def(tens, mask, small_eval = 0.00005):
     print(num_found, 'tensors found with eigenvalues <', small_eval)
     #print(num_found, 'tensors found with eigenvalues < 0')
     mod_tens = fw.einsum('...ij,...jk,...k,...lk->...il',
-                       evecs, fw.eye(3, dtype=tens.dtype), evals, evecs)
+                       evecs, fw.eye(3, dtype=tens.dtype).to(device=tens.device), evals, evecs)
     #mod_tens = fw.einsum('...ij,...j,...jk->...ik',
     #                     evecs, evals, evecs)
 
@@ -362,7 +367,7 @@ def make_pos_def(tens, mask, small_eval = 0.00005):
     chol = batch_cholesky(mod_tens)
     idx_nan = torch.where(torch.isnan(chol))
     nan_map = torch.where(torch.isnan(chol),1,0)
-    iso_tens = small_eval * torch.eye((3))
+    iso_tens = small_eval * torch.eye((3)).to(device=tens.device)
     for pt in range(len(idx_nan[0])):
         mod_tens[idx_nan[0][pt],idx_nan[1][pt],idx_nan[2][pt]] = iso_tens
     # if torch.norm(torch.transpose(mod_tens,3,4)-mod_tens)>0:
@@ -371,7 +376,7 @@ def make_pos_def(tens, mask, small_eval = 0.00005):
     #mod_tens[:,:,:,2,0]=mod_tens[:,:,:,0,2]
     #mod_tens[:,:,:,2,1]=mod_tens[:,:,:,1,2]
     mod_sym_tens = (mod_tens + torch.transpose(mod_tens,len(mod_tens.shape)-2,len(mod_tens.shape)-1))/2
-    mod_sym_tens[torch.det(mod_sym_tens)<=det_threshold] = torch.eye((3))
+    mod_sym_tens[torch.det(mod_sym_tens)<=det_threshold] = torch.eye((3)).to(device=tens.device)
     return(mod_sym_tens)
 
 
@@ -384,26 +389,43 @@ def get_euclidean_mean(img_list):
 
 
 if __name__ == "__main__":
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    #device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     # after switch device, you need restart the script
-    torch.cuda.set_device('cuda:1')
-    torch.set_default_tensor_type('torch.cuda.DoubleTensor')
-    print('setting torch print precision to 16')
-    torch.set_printoptions(precision=16)
-    print('WARNING turn off anomaly detection')
-    torch.autograd.set_detect_anomaly(True)
+    #torch.cuda.set_device('cuda:0')
+    #torch.set_default_tensor_type('torch.cuda.DoubleTensor')
+    #print('setting torch print precision to 16')
+    #torch.set_printoptions(precision=16)
+    #print('WARNING turn off anomaly detection')
+    #torch.autograd.set_detect_anomaly(True)
+    # device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+    # Keep subjects on CPU, and move each individually to/from GPU to update atlas
+    device = torch.device('cpu')
+    torch.set_default_tensor_type('torch.DoubleTensor')
 
     # file_name = []
     #file_name = [108222, 102715, 105923, 107422, 100206, 104416]
     input_dir = '/usr/sci/projects/abcd/anxiety_study/derivatives/metric_matching'
-    output_dir = '/usr/sci/projects/abcd/anxiety_study/derivatives/atlas_building_cuda'
-
+    #output_dir = '/usr/sci/projects/abcd/anxiety_study/derivatives/atlas_building_cuda_11controls_901iter'
+    #output_dir = '/usr/sci/projects/abcd/anxiety_study/derivatives/atlas_building_cuda_34subjects_1001iter'
+    output_dir = '/usr/sci/scratch/kris/abcd_results/atlas_building_cuda_34subjects_1001iter'
+    
     # TODO need more robust mechanism for working with BIDS data structure
     cases = [sbj for sbj in os.listdir(input_dir) if sbj[:4] == 'sub-']
     #num=3
     #num=2
-    #offs=[0,4,5]
-    offs=[1]
+    offs=[0,4,5,6,7,8]
+    offs=[0,4,5,6,7,8,9,10,11,12,13] # has an inversion problem, suspect it might be subject 13, but haven't confirmed yet
+    offs=[1,3,5,6,8,9,10,11,12,14,17] # has an inversion problem
+    offs=[0,4,5,6,7,8,9] # works
+    offs=[0,4,5,6,7,8,9,10] # has an inversion problem
+    offs=[0,4,5,6,7,8,9,11] # works
+    offs=[0,4,5,6,7,8,9,11,12] # has an inversion problem
+    offs=[0,4,5,6,7,8,9,11,13] # has an inversion problem
+    offs=[0,4,5,6,7,8,9,11,14] # works
+    offs=[0,4,5,6,7,8,9,11,14,15] # works sometimes, has an inversion problem depending on karcher mean order
+    offs=[1,3,5,6,7,8,9,11,14,16,17] # 22 subject offsets
+    offs=[0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17] 
+    #offs=[0,1]
     #print(f"WARNING, using first {num} cases and {num} controls only!!")
     #cases = cases[0:num] + cases[18:18+num]
     #print(f"WARNING, using first {num} cases only!!")
@@ -411,12 +433,13 @@ if __name__ == "__main__":
     #print(f"WARNING,building atlas from first subject repeated twice!!") # next do first 2 subjects
     #cases= cases[0:1] + cases[0:1]
     #print(f"WARNING, using", len(offs), 'cases and controls with offsets', offs)
-    print(f"WARNING, using", len(offs), 'cases vs CASES!! with offsets', offs)
+    #print(f"WARNING, using", len(offs), 'cases vs CASES!! with offsets', offs)
     outc = []
     for offset in offs:
         outc.append(cases[offset])
-        outc.append(cases[offset])
-        #outc.append(cases[18+offset])
+        #outc.append(cases[offset])
+        if (offset != 4) and (offset != 15): # the subjects at 22 and 33 are outliers to be excluded
+          outc.append(cases[18+offset])
     cases = outc
 
     session = 'ses-baselineYear1Arm1'
@@ -440,7 +463,8 @@ if __name__ == "__main__":
     resume = False
    
     start_iter = 0
-    iter_num = 3
+    #iter_num = 901#1801
+    iter_num = 1001#1801
 
     img_scale = 255.0
     tens_scale = 1000
@@ -557,8 +581,8 @@ if __name__ == "__main__":
     #     initialize the accumulative diffeomorphism    
         if resume==False:
             print('start from identity')
-            phi_inv_acc_list.append(get_idty(height, width, depth))
-            phi_acc_list.append(get_idty(height, width, depth))
+            phi_inv_acc_list.append(get_idty(height, width, depth,device='cpu'))
+            phi_acc_list.append(get_idty(height, width, depth,device='cpu'))
         else:
             print('start from checkpoint')
             phi_inv_acc_list.append(torch.from_numpy(sio.loadmat(f'{output_dir}/{subj}_{session}_{start_iter-1}_phi_inv.mat')['diffeo']).to(device))
@@ -572,7 +596,7 @@ if __name__ == "__main__":
     # Orig
     #dim, sigma, epsilon, inner_iter_num = 3., 0, 5e-3, 1 # epsilon = 3e-3 for orig tensor, 5e-3 for HCP
     # sigma = 0
-    dim, sigma, epsilon, inner_iter_num = 3., 0, 5e-9, 2 # epsilon = 3e-3 for orig tensor, 5e-3 for HCP, 5e-8 for 2 ABCD subj, 5e-9 not working for 6 subj ABCD
+    dim, sigma, epsilon, inner_iter_num = 3., 0, 5e-7, 2 # epsilon = 3e-3 for orig tensor, 5e-3 for HCP, 5e-9 not working for 2 ABCD subj, 5e-9 not working for 6 subj ABCD
     print("WARNING!!! Regularizer on phi disabled, sigma set to 0")
     # add regularizer on phi
     #dim, sigma, epsilon, inner_iter_num = 3., 1e10, 5e-8, 2 # epsilon = 3e-3 for orig tensor, 5e-3 for HCP
@@ -585,14 +609,16 @@ if __name__ == "__main__":
         # G[torch.abs(torch.det(G)-1)<=2e-4] = torch.eye((3))
         # G[torch.det(G)<=1e-1] = torch.eye((3))
 
-        print("WARNING!! Not shuffling Karcher mean!")
         #mask_union = ((mask_list[0]+mask_list[1]+mask_list[2]+mask_list[3]+mask_list[4]+mask_list[5])/6).to(device)
         mask_union = (sum(mask_list)/len(mask_list)).to(device)
 
         print('\n\n main loop, iter', i, 'max G:', torch.max(G), 'max mask_union:', torch.max(mask_union), '\n\n')
 
+        #print("WARNING!! Not shuffling Karcher mean!")
         #atlas = get_karcher_mean(G, 1./dim, mask_union, scale_factor,  f'{output_dir}/theta_{i}.nhdr')#_shuffle
-        atlas = get_karcher_mean(G, 1./dim, mask_union, scale_factor, None)#_shuffle
+        #atlas = get_karcher_mean(G, 1./dim, mask_union, scale_factor,  f'{output_dir}/{i}')#_shuffle
+        #atlas = get_karcher_mean(G, 1./dim, mask_union, scale_factor, None)#_shuffle
+        atlas = get_karcher_mean_shuffle(G, 1./dim, device=cuda_dev)
         mean_img = get_euclidean_mean(img_list)
         print('\n\n main loop, iter', i, 'max atlas:', torch.max(atlas), '\n\n')
 
@@ -615,8 +641,9 @@ if __name__ == "__main__":
             #mask_list[s] = compose_function(mask_list[s], phi_inv_list[s])
                 
         '''check point'''
+        if i%200==0:
         #if i%100==0:
-        if i%1==0:
+        #if i%1==0:
             atlas_lin = np.zeros((6,height,width,depth))
             mask_acc = np.zeros((height,width,depth))
             #print('\n\n\natlas[1202815]',atlas.reshape(-1, 3, 3)[1202815])
@@ -637,33 +664,33 @@ if __name__ == "__main__":
                 sio.savemat(f'{output_dir}/{subj}_{session}_{i}_phi.mat', {'diffeo': phi_acc_list[s].cpu().detach().numpy()})
                 sio.savemat(f'{output_dir}/{subj}_{session}_{i}_met_energy.mat', {'energy': met_energy_list[s]})
                 sio.savemat(f'{output_dir}/{subj}_{session}_{i}_img_energy.mat', {'energy': img_energy_list[s]})
-                tens_lin = np.zeros((6,height,width,depth))
-                phi_inv_G = test_make_pos_def(phi_pullback(phi_inv_list[s], G[s], mask_list[s]), mask_list[s], 1.0e-10)
-                #print('\n\n\ntens[',s,'][1202815]',tensor_met_list[s].reshape(-1, 3, 3)[1202815])
-                #print('tens[',s,'][70,132,85]',tensor_met_list[s][70,132,85])
-                #print('\n\n\nG[',s,'][1202815]',phi_inv_G.reshape(-1, 3, 3)[1202815])
-                #print('G[',s,'][70,132,85]',phi_inv_G[70,132,85])
+                # tens_lin = np.zeros((6,height,width,depth))
+                # phi_inv_G = test_make_pos_def(phi_pullback(phi_inv_list[s], G[s], mask_list[s]), mask_list[s], 1.0e-10)
+                # #print('\n\n\ntens[',s,'][1202815]',tensor_met_list[s].reshape(-1, 3, 3)[1202815])
+                # #print('tens[',s,'][70,132,85]',tensor_met_list[s][70,132,85])
+                # #print('\n\n\nG[',s,'][1202815]',phi_inv_G.reshape(-1, 3, 3)[1202815])
+                # #print('G[',s,'][70,132,85]',phi_inv_G[70,132,85])
 
-                tens_inv = torch.inverse(tensor_met_list[s]) / tens_scale
-                #print('tens_inv[',s,'][70,132,85]',tens_inv[70,132,85])
-                #print('tens_inv[',s,'][1390565]', tens_inv.reshape(-1,3,3)[1390565],'\n\n\n')
-                tens_lin[0] = tens_inv[:,:,:,0,0].cpu()
-                tens_lin[1] = tens_inv[:,:,:,0,1].cpu()
-                tens_lin[2] = tens_inv[:,:,:,0,2].cpu()
-                tens_lin[3] = tens_inv[:,:,:,1,1].cpu()
-                tens_lin[4] = tens_inv[:,:,:,1,2].cpu()
-                tens_lin[5] = tens_inv[:,:,:,2,2].cpu()
-                WriteTensorNPArray(np.transpose(tens_lin,(3,2,1,0)), f'{output_dir}/tens{s}_{i}_tens.nhdr')
-                G_inv = torch.inverse(phi_inv_G) / tens_scale
-                #print('Ginv[',s,'][70,132,85]',G_inv[70,132,85])
-                #print('Ginv[',s,'][1390565]', G_inv.reshape(-1,3,3)[1390565],'\n\n\n')
-                tens_lin[0] = G_inv[:,:,:,0,0].cpu()
-                tens_lin[1] = G_inv[:,:,:,0,1].cpu()
-                tens_lin[2] = G_inv[:,:,:,0,2].cpu()
-                tens_lin[3] = G_inv[:,:,:,1,1].cpu()
-                tens_lin[4] = G_inv[:,:,:,1,2].cpu()
-                tens_lin[5] = G_inv[:,:,:,2,2].cpu()
-                WriteTensorNPArray(np.transpose(tens_lin,(3,2,1,0)), f'{output_dir}/G{s}_{i}_tens.nhdr')
+                # tens_inv = torch.inverse(tensor_met_list[s]) / tens_scale
+                # #print('tens_inv[',s,'][70,132,85]',tens_inv[70,132,85])
+                # #print('tens_inv[',s,'][1390565]', tens_inv.reshape(-1,3,3)[1390565],'\n\n\n')
+                # tens_lin[0] = tens_inv[:,:,:,0,0].cpu()
+                # tens_lin[1] = tens_inv[:,:,:,0,1].cpu()
+                # tens_lin[2] = tens_inv[:,:,:,0,2].cpu()
+                # tens_lin[3] = tens_inv[:,:,:,1,1].cpu()
+                # tens_lin[4] = tens_inv[:,:,:,1,2].cpu()
+                # tens_lin[5] = tens_inv[:,:,:,2,2].cpu()
+                # WriteTensorNPArray(np.transpose(tens_lin,(3,2,1,0)), f'{output_dir}/tens{s}_{i}_tens.nhdr')
+                # G_inv = torch.inverse(phi_inv_G) / tens_scale
+                # #print('Ginv[',s,'][70,132,85]',G_inv[70,132,85])
+                # #print('Ginv[',s,'][1390565]', G_inv.reshape(-1,3,3)[1390565],'\n\n\n')
+                # tens_lin[0] = G_inv[:,:,:,0,0].cpu()
+                # tens_lin[1] = G_inv[:,:,:,0,1].cpu()
+                # tens_lin[2] = G_inv[:,:,:,0,2].cpu()
+                # tens_lin[3] = G_inv[:,:,:,1,1].cpu()
+                # tens_lin[4] = G_inv[:,:,:,1,2].cpu()
+                # tens_lin[5] = G_inv[:,:,:,2,2].cpu()
+                # WriteTensorNPArray(np.transpose(tens_lin,(3,2,1,0)), f'{output_dir}/G{s}_{i}_tens.nhdr')
 
                 
     #             plt.plot(energy_list[s])

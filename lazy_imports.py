@@ -42,6 +42,7 @@ pd = lazy_import.lazy_module("pandas")
 torch = lazy_import.lazy_module("torch")
 vlinalg = lazy_import.lazy_module("torchvectorized.vlinalg")
 #torch_sym3eig = lazy_import.lazy_module("torch_sym3eig")
+se = lazy_import.lazy_callable("torch_sym3eig.Sym3Eig")
 
 axes3d = lazy_import.lazy_module("mpl_toolkits.mplot3d.axes3d")
 art3d = lazy_import.lazy_module("mpl_toolkits.mplot3d.art3d")

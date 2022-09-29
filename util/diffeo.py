@@ -205,7 +205,7 @@ def get_jacobian_matrix(diffeo): # diffeo: 2 x size_h x size_w
     return torch.stack((get_gradient(diffeo[0]), get_gradient(diffeo[1])))
 
 def get_jacobian_matrix_3d(diffeo):  # diffeo: 3 x size_h x size_w x size_d
-    return torch.stack((get_gradient_3d(diffeo[0]), get_gradient_3d(diffeo[1]), get_gradient_3d(diffeo[2])))#.to(device=torch.device('cuda'))
+    return torch.stack((get_gradient_3d(diffeo[0]), get_gradient_3d(diffeo[1]), get_gradient_3d(diffeo[2]))).type(torch.DoubleTensor).to(diffeo.device)#.to(device=torch.device('cuda'))
 
 def get_gradient(F):  # 2D F: size_h x size_w
     F_padded = torch.zeros((F.shape[0]+2,F.shape[1]+2), device=F.device)#, dtype=torch.double)
@@ -246,7 +246,7 @@ def get_gradient_3d(F):  # 3D F: size_h x size_w x size_d
            - torch.roll(F_padded, shifts=(0, 0, 1), dims=(0, 1, 2))) / 2
     return torch.stack((F_x[1:-1, 1:-1, 1:-1],
                         F_y[1:-1, 1:-1, 1:-1],
-                        F_z[1:-1, 1:-1, 1:-1]))
+                        F_z[1:-1, 1:-1, 1:-1])).type(torch.DoubleTensor).to(F.device)
 
 
 # get the identity mapping
@@ -306,9 +306,494 @@ def compose_function(f, diffeo, mode='periodic'):  # f: N x m x n  diffeo: 2 x m
 #     return (1-D)*(1-C)*F00+C*(1-D)*F01+D*(1-C)*F10+C*D*F11
 
 # my interpolation function
+def compose_function_orig_3d(f, diffeo, mode='periodic'):  # f: N x h x w x d  diffeo: 3 x h x w x d
+ #   print('f.shape',f.shape,'\nf:\n',f)
+    #f = f.permute(f.dim() - 3, f.dim() - 2, f.dim() - 1, *range(f.dim() - 3))  # change the size of f to m x n x ...
+    #size_h, size_w, size_d = f.shape[:3]
+    size_h, size_w, size_d = f.shape[-3:]
+
+#     original and 4.3
+    if mode == 'id' or mode == 'zero':
+#      print('diffeo:\n',diffeo)
+      #Ind_diffeo_bdry = torch.stack((torch.floor(diffeo[0]).long(),
+      #                          torch.floor(diffeo[1]).long(),
+      #                          torch.floor(diffeo[2]).long()))#.to(device=torch.device('cuda'))
+      Ind_diffeo = torch.stack((torch.floor(diffeo[0]).long(),
+                                torch.floor(diffeo[1]).long(),
+                                torch.floor(diffeo[2]).long()))#.to(device=torch.device('cuda'))
+      #Ind_diffeo = torch.stack((diffeo[0].long(),
+      #                          diffeo[1].long(),
+      #                          diffeo[2].long()))#.to(device=torch.device('cuda'))
+
+      #for i in range(Ind_diffeo.shape[0]):
+      #  idx = torch.where((diffeo[i] < 0) & (diffeo[i] != Ind_diffeo[i]))
+      #  Ind_diffeo[i][idx] = diffeo[i,idx[0],idx[1],idx[2]].long() - 1
+      
+    else:
+      Ind_diffeo = torch.stack((torch.floor(diffeo[0]).long() % size_h,
+                                torch.floor(diffeo[1]).long() % size_w,
+                                torch.floor(diffeo[2]).long() % size_d))#.to(device=torch.device('cuda'))
+#     4.7
+#     Ind_diffeo = torch.stack((torch.floor(diffeo[2]).long() % size_h,
+#                               torch.floor(diffeo[1]).long() % size_w,
+#                               torch.floor(diffeo[0]).long() % size_d))#.to(device=torch.device('cuda'))
+
+    #F = torch.zeros(size_h + 1, size_w + 1, size_d + 1, *f.shape[3:], device=f.device)#, dtype=torch.double
+    #F = torch.zeros(*f.shape[:-3],size_h + 1, size_w + 1, size_d + 1, device=f.device)#, dtype=torch.double
+    F = torch.zeros(*f.shape[:-3],size_h + 2, size_w + 2, size_d + 2, device=f.device)#, dtype=torch.double
+
+    if mode == 'border':
+        # F[:size_h, :size_w, :size_d] = f
+        # F[-1, :size_w, :size_d] = f[-1]
+        # F[:size_h, -1, :size_d] = f[:, -1]
+        # F[:size_h, :size_w, -1] = f[:, :, -1]
+        # F[-1, -1, :size_d] = f[-1, -1, :]
+        # F[-1, :size_w, -1] = f[-1, :, -1]
+        # F[:size_h, -1, -1] = f[:, -1, -1]
+        # F[-1, -1, -1] = f[-1, -1, -1]
+        # F[..., :size_h, :size_w, :size_d] = f
+        # F[..., -1, :size_w, :size_d] = f[..., -1]
+        # F[..., :size_h, -1, :size_d] = f[..., :, -1]
+        # F[..., :size_h, :size_w, -1] = f[..., :, :, -1]
+        # F[..., -1, -1, :size_d] = f[..., -1, -1, :]
+        # F[..., -1, :size_w, -1] = f[..., -1, :, -1]
+        # F[..., :size_h, -1, -1] = f[..., :, -1, -1]
+        # F[..., -1, -1, -1] = f[..., -1, -1, -1]
+
+        F[..., 1:size_h+1, 1:size_w+1, 1:size_d+1] = f
+        F[..., 0, 1:size_w+1, 1:size_d+1] = f[..., 0, :, :]
+        F[..., -1, 1:size_w+1, 1:size_d+1] = f[..., -1, :, :]
+        F[..., 1:size_h+1, 0, 1:size_d+1] = f[..., :, 0, :]
+        F[..., 1:size_h+1, -1, 1:size_d+1] = f[..., :, -1, :]
+        F[..., 1:size_h+1, 1:size_w+1, 0] = f[..., :, :, 0]
+        F[..., 1:size_h+1, 1:size_w+1, -1] = f[..., :, :, -1]
+        F[..., 0, 0, 1:size_d+1] = f[..., 0, 0, :]
+        F[..., -1, 0, 1:size_d+1] = f[..., -1, 0, :]
+        F[..., 0, -1, 1:size_d+1] = f[..., 0, -1, :]
+        F[..., -1, -1, 1:size_d+1] = f[..., -1, -1, :]
+        F[..., 0, 1:size_w+1, 0] = f[..., 0, :, 0]
+        F[..., -1, 1:size_w+1, 0] = f[..., -1, :, 0]
+        F[..., 0, 1:size_w+1, -1] = f[..., 0, :, -1]
+        F[..., -1, 1:size_w+1, -1] = f[..., -1, :, -1]
+        F[..., 1:size_h+1, 0, 0] = f[..., :, 0,  0]
+        F[..., 1:size_h+1, -1, 0] = f[..., :, -1,  0]
+        F[..., 1:size_h+1, 0, -1] = f[..., :, 0, -1]
+        F[..., 1:size_h+1, -1, -1] = f[..., :, -1, -1]
+        F[..., 0, 0, 0] = f[..., 0, 0, 0]
+        F[..., -1, -1, -1] = f[..., -1, -1, -1]
+    elif mode == 'periodic':
+        # extend the function values periodically (1234 1)
+        # F[:size_h, :size_w, :size_d] = f
+        # F[-1, :size_w, :size_d] = f[0]
+        # F[:size_h, -1, :size_d] = f[:, 0]
+        # F[:size_h, :size_w, -1] = f[:, :, 0]
+        # F[-1, -1, :size_d] = f[0, 0, :]
+        # F[-1, :size_w, -1] = f[0, :, 0]
+        # F[:size_h, -1, -1] = f[:, 0, 0]
+        # F[-1, -1, -1] = f[0, 0, 0]
+        # F[..., :size_h, :size_w, :size_d] = f
+        # F[..., -1, :size_w, :size_d] = f[..., 0]
+        # F[..., :size_h, -1, :size_d] = f[..., :, 0]
+        # F[..., :size_h, :size_w, -1] = f[..., :, :, 0]
+        # F[..., -1, -1, :size_d] = f[..., 0, 0, :]
+        # F[..., -1, :size_w, -1] = f[..., 0, :, 0]
+        # F[..., :size_h, -1, -1] = f[..., :, 0, 0]
+        # F[..., -1, -1, -1] = f[..., 0, 0, 0]
+        
+        F[..., 1:size_h+1, 1:size_w+1, 1:size_d+1] = f
+        F[..., 0, 1:size_w+1, 1:size_d+1] = f[..., -1, :, :]
+        F[..., -1, 1:size_w+1, 1:size_d+1] = f[..., 0, :, :]
+        F[..., 1:size_h+1, 0, 1:size_d+1] = f[..., :, -1, :]
+        F[..., 1:size_h+1, -1, 1:size_d+1] = f[..., :, 0, :]
+        F[..., 1:size_h+1, 1:size_w+1, 0] = f[..., :, :, -1]
+        F[..., 1:size_h+1, 1:size_w+1, -1] = f[..., :, :, 0]
+        F[..., 0, 0, 1:size_d+1] = f[..., -1, -1, :]
+        F[..., -1, 0, 1:size_d+1] = f[..., 0, -1, :]
+        F[..., 0, -1, 1:size_d+1] = f[..., -1, 0, :]
+        F[..., -1, -1, 1:size_d+1] = f[..., 0, 0, :]
+        F[..., 0, 1:size_w+1, 0] = f[..., -1, :, -1]
+        F[..., -1, 1:size_w+1, 0] = f[..., 0, :, -1]
+        F[..., 0, 1:size_w+1, -1] = f[..., -1, :, 0]
+        F[..., -1, 1:size_w+1, -1] = f[..., 0, :, 0]
+        F[..., 1:size_h+1, 0, 0] = f[..., :, -1, -1]
+        F[..., 1:size_h+1, -1, 0] = f[..., :, 0, -1]
+        F[..., 1:size_h+1, 0, -1] = f[..., :, -1, 0]
+        F[..., 1:size_h+1, -1, -1] = f[..., :, 0, 0]
+        F[..., 0, 0, 0] = f[..., -1, -1, -1]
+        F[..., -1, -1, -1] = f[..., 0, 0, 0]
+    elif mode == 'id':
+        #print("mode == 'id'")
+        # F[:size_h, :size_w, :size_d] = f
+        # F[-1, :size_w, :size_d] = Ind_diffeo[0] % size_h
+        # F[:size_h, -1, :size_d] = Ind_diffeo[1] % size_w
+        # F[:size_h, :size_w, -1] = Ind_diffeo[2] % size_d
+        # F[-1, -1, :size_d] = f[0, 0, :]
+        # F[-1, :size_w, -1] = f[0, :, 0]
+        # F[:size_h, -1, -1] = f[:, 0, 0]
+        # F[-1, -1, -1] = Ind_diffeo[:][-1, -1, -1]
+        # F[..., :size_h, :size_w, :size_d] = f
+        #F[..., -1, :size_w, :size_d] = Ind_diffeo[0] % size_h
+        #F[..., :size_h, -1, :size_d] = Ind_diffeo[1] % size_w
+        #F[..., :size_h, :size_w, -1] = Ind_diffeo[2] % size_d
+        # F[..., -1, :size_w, :size_d] = Ind_diffeo[:][-1, :, :]
+        # F[..., :size_h, -1, :size_d] = Ind_diffeo[:][:, -1, :]
+        # F[..., :size_h, :size_w, -1] = Ind_diffeo[:][:, :, -1]
+        # F[..., -1, -1, :size_d] = Ind_diffeo[:][-1, -1, :]
+        # F[..., -1, :size_w, -1] = Ind_diffeo[:][-1, :, -1]
+        # F[..., :size_h, -1, -1] = Ind_diffeo[:][:, -1, -1]
+        # F[..., -1, -1, -1] = Ind_diffeo[:][-1, -1, -1]
+        F[..., 1:size_h+1, 1:size_w+1, 1:size_d+1] = f
+        F[..., 0, 1:size_w+1, 1:size_d+1] = Ind_diffeo[:, 0, :size_w, :size_d]
+        F[..., -1, 1:size_w+1, 1:size_d+1] = Ind_diffeo[:, -1, :size_w, :size_d]
+        F[..., 1:size_h+1, 0, 1:size_d+1] = Ind_diffeo[:, :size_h, 0, :size_d]
+        F[..., 1:size_h+1, -1, 1:size_d+1] = Ind_diffeo[:, :size_h, -1, :size_d]
+        F[..., 1:size_h+1, 1:size_w+1, 0] = Ind_diffeo[:, :size_h, :size_w, 0]
+        F[..., 1:size_h+1, 1:size_w+1, -1] = Ind_diffeo[:, :size_h, :size_w, -1]
+        F[..., 0, 0, 1:size_d+1] = Ind_diffeo[:, 0, 0, :size_d]
+        F[..., -1, 0, 1:size_d+1] = Ind_diffeo[:, -1, 0, :size_d]
+        F[..., 0, -1, 1:size_d+1] = Ind_diffeo[:, 0, -1, :size_d]
+        F[..., -1, -1, 1:size_d+1] = Ind_diffeo[:, -1, -1, :size_d]
+        F[..., 0, 1:size_w+1, 0] = Ind_diffeo[:, 0, :size_w, 0]
+        F[..., -1, 1:size_w+1, 0] = Ind_diffeo[:, -1, :size_w, 0]
+        F[..., 0, 1:size_w+1, -1] = Ind_diffeo[:, 0, :size_w, -1]
+        F[..., -1, 1:size_w+1, -1] = Ind_diffeo[:, -1, :size_w, -1]
+        F[..., 1:size_h+1, 0, 0] = Ind_diffeo[:, :size_h, 0, 0]
+        F[..., 1:size_h+1, -1, 0] = Ind_diffeo[:, :size_h, -1, 0]
+        F[..., 1:size_h+1, 0, -1] = Ind_diffeo[:, :size_h, 0, -1]
+        F[..., 1:size_h+1, -1, -1] = Ind_diffeo[:, :size_h, -1, -1]
+        F[..., 0, 0, 0] = Ind_diffeo[:, 0, 0, 0]
+        F[..., -1, -1, -1] = Ind_diffeo[:, -1, -1, -1]
+
+
+    elif mode == 'zero':
+    #    #print("mode == 'id'")
+        #F[:size_h, :size_w, :size_d] = f
+        #F[-1, :size_w, :size_d] = Ind_diffeo[0] % size_h
+        #F[:size_h, -1, :size_d] = Ind_diffeo[1] % size_w
+        #F[:size_h, :size_w, -1] = Ind_diffeo[2] % size_d
+        #F[-1, -1, -1] = 0
+        # F[..., :size_h, :size_w, :size_d] = f
+        # F[..., -1, :size_w, :size_d] = 0
+        # F[..., :size_h, -1, :size_d] = 0
+        # F[..., :size_h, :size_w, -1] = 0
+        # F[..., -1, -1, :size_d] = 0
+        # F[..., -1, :size_w, -1] = 0
+        # F[..., :size_h, -1, -1] = 0
+        # F[..., -1, -1, -1] = 0
+        F[..., 1:size_h+1, 1:size_w+1, 1:size_d+1] = f
+        F[..., 0, 1:size_w+1, 1:size_d+1] = 0
+        F[..., -1, 1:size_w+1, 1:size_d+1] = 0
+        F[..., 1:size_h+1, 0, 1:size_d+1] = 0
+        F[..., 1:size_h+1, -1, 1:size_d+1] = 0
+        F[..., 1:size_h+1, 1:size_w+1, 0] = 0
+        F[..., 1:size_h+1, 1:size_w+1, -1] = 0
+        F[..., 0, 0, 1:size_d+1] = 0
+        F[..., -1, 0, 1:size_d+1] = 0
+        F[..., 0, -1, 1:size_d+1] = 0
+        F[..., -1, -1, 1:size_d+1] = 0
+        F[..., 0, 1:size_w+1, 0] = 0
+        F[..., -1, 1:size_w+1, 0] = 0
+        F[..., 0, 1:size_w+1, -1] = 0
+        F[..., -1, 1:size_w+1, -1] = 0
+        F[..., 1:size_h+1, 0, 0] = 0
+        F[..., 1:size_h+1, -1, 0] = 0
+        F[..., 1:size_h+1, 0, -1] = 0
+        F[..., 1:size_h+1, -1, -1] = 0
+        F[..., 0, 0, 0] = 0
+        F[..., -1, -1, -1] = 0
+        
+
+    #print('Ind_diffeo[0]:\n', Ind_diffeo[0])    
+    #print('Ind_diffeo[1]:\n', Ind_diffeo[1])    
+    #print('Ind_diffeo[2]:\n', Ind_diffeo[2])
+    #print('F:\n', F)    
+
+    # # use the trilinear interpolation method
+    #F000 = F[Ind_diffeo[0], Ind_diffeo[1], Ind_diffeo[2]].permute(*range(3, f.dim()), 0, 1, 2)
+    #F010 = F[Ind_diffeo[0], Ind_diffeo[1] + 1, Ind_diffeo[2]].permute(*range(3, f.dim()), 0, 1, 2)
+    #F100 = F[Ind_diffeo[0] + 1, Ind_diffeo[1], Ind_diffeo[2]].permute(*range(3, f.dim()), 0, 1, 2)
+    #F110 = F[Ind_diffeo[0] + 1, Ind_diffeo[1] + 1, Ind_diffeo[2]].permute(*range(3, f.dim()), 0, 1, 2)
+    #F001 = F[Ind_diffeo[0], Ind_diffeo[1], Ind_diffeo[2] + 1].permute(*range(3, f.dim()), 0, 1, 2)
+    #F011 = F[Ind_diffeo[0], Ind_diffeo[1] + 1, Ind_diffeo[2] + 1].permute(*range(3, f.dim()), 0, 1, 2)
+    #F101 = F[Ind_diffeo[0] + 1, Ind_diffeo[1], Ind_diffeo[2] + 1].permute(*range(3, f.dim()), 0, 1, 2)
+    #F111 = F[Ind_diffeo[0] + 1, Ind_diffeo[1] + 1, Ind_diffeo[2] + 1].permute(*range(3, f.dim()), 0, 1, 2)
+    if mode == 'id' or mode == 'zero':
+      #F000 = torch.zeros(*f.shape[3:], size_h, size_w, size_d, device=f.device)
+      F000 = torch.zeros(*f.shape[:-3], size_h, size_w, size_d, device=f.device)
+      F010 = torch.zeros_like(F000)
+      F100 = torch.zeros_like(F000)
+      F110 = torch.zeros_like(F000)
+      F001 = torch.zeros_like(F000)
+      F011 = torch.zeros_like(F000)
+      F101 = torch.zeros_like(F000)
+      F111 = torch.zeros_like(F000)
+      idx = torch.where((Ind_diffeo[0] >= 0) & (Ind_diffeo[0] < size_h) &
+                        (Ind_diffeo[1] >= 0) & (Ind_diffeo[1] < size_w) &
+                        (Ind_diffeo[2] >= 0) & (Ind_diffeo[2] < size_d))
+      #F000[:,idx[0],idx[1],idx[2]] = F[Ind_diffeo[0][idx], Ind_diffeo[1][idx], Ind_diffeo[2][idx]].transpose(0,1)
+      #F010[:,idx[0],idx[1],idx[2]] = F[Ind_diffeo[0][idx], Ind_diffeo[1][idx] + 1, Ind_diffeo[2][idx]].transpose(0,1)
+      #F100[:,idx[0],idx[1],idx[2]] = F[Ind_diffeo[0][idx] + 1, Ind_diffeo[1][idx], Ind_diffeo[2][idx]].transpose(0,1)
+      #F110[:,idx[0],idx[1],idx[2]] = F[Ind_diffeo[0][idx] + 1, Ind_diffeo[1][idx] + 1, Ind_diffeo[2][idx]].transpose(0,1)
+      #F001[:,idx[0],idx[1],idx[2]] = F[Ind_diffeo[0][idx], Ind_diffeo[1][idx], Ind_diffeo[2][idx] + 1].transpose(0,1)
+      #F011[:,idx[0],idx[1],idx[2]] = F[Ind_diffeo[0][idx], Ind_diffeo[1][idx] + 1, Ind_diffeo[2][idx] + 1].transpose(0,1)
+      #F101[:,idx[0],idx[1],idx[2]] = F[Ind_diffeo[0][idx] + 1, Ind_diffeo[1][idx], Ind_diffeo[2][idx] + 1].transpose(0,1)
+      #F111[:,idx[0],idx[1],idx[2]] = F[Ind_diffeo[0][idx] + 1, Ind_diffeo[1][idx] + 1, Ind_diffeo[2][idx] + 1].transpose(0,1)
+      # F000[...,idx[0],idx[1],idx[2]] = F[..., Ind_diffeo[0][idx], Ind_diffeo[1][idx], Ind_diffeo[2][idx]]
+      # F010[...,idx[0],idx[1],idx[2]] = F[..., Ind_diffeo[0][idx], Ind_diffeo[1][idx] + 1, Ind_diffeo[2][idx]]
+      # F100[...,idx[0],idx[1],idx[2]] = F[..., Ind_diffeo[0][idx] + 1, Ind_diffeo[1][idx], Ind_diffeo[2][idx]]
+      # F110[...,idx[0],idx[1],idx[2]] = F[..., Ind_diffeo[0][idx] + 1, Ind_diffeo[1][idx] + 1, Ind_diffeo[2][idx]]
+      # F001[...,idx[0],idx[1],idx[2]] = F[..., Ind_diffeo[0][idx], Ind_diffeo[1][idx], Ind_diffeo[2][idx] + 1]
+      # F011[...,idx[0],idx[1],idx[2]] = F[..., Ind_diffeo[0][idx], Ind_diffeo[1][idx] + 1, Ind_diffeo[2][idx] + 1]
+      # F101[...,idx[0],idx[1],idx[2]] = F[..., Ind_diffeo[0][idx] + 1, Ind_diffeo[1][idx], Ind_diffeo[2][idx] + 1]
+      # F111[...,idx[0],idx[1],idx[2]] = F[..., Ind_diffeo[0][idx] + 1, Ind_diffeo[1][idx] + 1, Ind_diffeo[2][idx] + 1]
+      # Add 1 to every index since F is padded by 1 compared to diffeo and f
+      # F000[...,idx[0],idx[1],idx[2]] = F[..., Ind_diffeo[0][idx]+1, Ind_diffeo[1][idx]+1, Ind_diffeo[2][idx]+1]
+      # F010[...,idx[0],idx[1],idx[2]] = F[..., Ind_diffeo[0][idx]+1, Ind_diffeo[1][idx] + 2, Ind_diffeo[2][idx]+1]
+      # F100[...,idx[0],idx[1],idx[2]] = F[..., Ind_diffeo[0][idx] + 2, Ind_diffeo[1][idx]+1, Ind_diffeo[2][idx]+1]
+      # F110[...,idx[0],idx[1],idx[2]] = F[..., Ind_diffeo[0][idx] + 2, Ind_diffeo[1][idx] + 2, Ind_diffeo[2][idx]+1]
+      # F001[...,idx[0],idx[1],idx[2]] = F[..., Ind_diffeo[0][idx]+1, Ind_diffeo[1][idx]+1, Ind_diffeo[2][idx] + 2]
+      # F011[...,idx[0],idx[1],idx[2]] = F[..., Ind_diffeo[0][idx]+1, Ind_diffeo[1][idx] + 2, Ind_diffeo[2][idx] + 2]
+      # F101[...,idx[0],idx[1],idx[2]] = F[..., Ind_diffeo[0][idx] + 2, Ind_diffeo[1][idx]+1, Ind_diffeo[2][idx] + 2]
+      # F111[...,idx[0],idx[1],idx[2]] = F[..., Ind_diffeo[0][idx] + 2, Ind_diffeo[1][idx] + 2, Ind_diffeo[2][idx] + 2]
+      F000[...,idx[0],idx[1],idx[2]] = F[..., Ind_diffeo[0,idx[0],idx[1],idx[2]]+1, Ind_diffeo[1,idx[0],idx[1],idx[2]]+1, Ind_diffeo[2,idx[0],idx[1],idx[2]]+1]
+      idx = torch.where((Ind_diffeo[0] >= 0) & (Ind_diffeo[0] < size_h) &
+                        (Ind_diffeo[1]+1 >= 0) & (Ind_diffeo[1]+1 < size_w) &
+                        (Ind_diffeo[2] >= 0) & (Ind_diffeo[2] < size_d))
+      F010[...,idx[0],idx[1],idx[2]] = F[..., Ind_diffeo[0,idx[0],idx[1],idx[2]]+1, Ind_diffeo[1,idx[0],idx[1],idx[2]]+2, Ind_diffeo[2,idx[0],idx[1],idx[2]]+1]
+      idx = torch.where((Ind_diffeo[0]+1 >= 0) & (Ind_diffeo[0]+1 < size_h) &
+                        (Ind_diffeo[1] >= 0) & (Ind_diffeo[1] < size_w) &
+                        (Ind_diffeo[2] >= 0) & (Ind_diffeo[2] < size_d))
+      
+      F100[...,idx[0],idx[1],idx[2]] = F[..., Ind_diffeo[0,idx[0],idx[1],idx[2]]+2, Ind_diffeo[1,idx[0],idx[1],idx[2]]+1, Ind_diffeo[2,idx[0],idx[1],idx[2]]+1]
+      idx = torch.where((Ind_diffeo[0]+1 >= 0) & (Ind_diffeo[0]+1 < size_h) &
+                        (Ind_diffeo[1]+1 >= 0) & (Ind_diffeo[1]+1 < size_w) &
+                        (Ind_diffeo[2] >= 0) & (Ind_diffeo[2] < size_d))
+      
+      F110[...,idx[0],idx[1],idx[2]] = F[..., Ind_diffeo[0,idx[0],idx[1],idx[2]]+2, Ind_diffeo[1,idx[0],idx[1],idx[2]]+2, Ind_diffeo[2,idx[0],idx[1],idx[2]]+1]
+      idx = torch.where((Ind_diffeo[0] >= 0) & (Ind_diffeo[0] < size_h) &
+                        (Ind_diffeo[1] >= 0) & (Ind_diffeo[1] < size_w) &
+                        (Ind_diffeo[2]+1 >= 0) & (Ind_diffeo[2]+1 < size_d))
+      
+      F001[...,idx[0],idx[1],idx[2]] = F[..., Ind_diffeo[0,idx[0],idx[1],idx[2]]+1, Ind_diffeo[1,idx[0],idx[1],idx[2]]+1, Ind_diffeo[2,idx[0],idx[1],idx[2]]+2]
+      idx = torch.where((Ind_diffeo[0] >= 0) & (Ind_diffeo[0] < size_h) &
+                        (Ind_diffeo[1]+1 >= 0) & (Ind_diffeo[1]+1 < size_w) &
+                        (Ind_diffeo[2]+1 >= 0) & (Ind_diffeo[2]+1 < size_d))
+      
+      F011[...,idx[0],idx[1],idx[2]] = F[..., Ind_diffeo[0,idx[0],idx[1],idx[2]]+1, Ind_diffeo[1,idx[0],idx[1],idx[2]]+2, Ind_diffeo[2,idx[0],idx[1],idx[2]]+2]
+      idx = torch.where((Ind_diffeo[0]+1 >= 0) & (Ind_diffeo[0]+1 < size_h) &
+                        (Ind_diffeo[1] >= 0) & (Ind_diffeo[1] < size_w) &
+                        (Ind_diffeo[2]+1 >= 0) & (Ind_diffeo[2]+1 < size_d))
+      
+      F101[...,idx[0],idx[1],idx[2]] = F[..., Ind_diffeo[0,idx[0],idx[1],idx[2]]+2, Ind_diffeo[1,idx[0],idx[1],idx[2]]+1, Ind_diffeo[2,idx[0],idx[1],idx[2]]+2]
+      idx = torch.where((Ind_diffeo[0]+1 >= 0) & (Ind_diffeo[0]+1 < size_h) &
+                        (Ind_diffeo[1]+1 >= 0) & (Ind_diffeo[1]+1 < size_w) &
+                        (Ind_diffeo[2]+1 >= 0) & (Ind_diffeo[2]+1 < size_d))
+      
+      F111[...,idx[0],idx[1],idx[2]] = F[..., Ind_diffeo[0,idx[0],idx[1],idx[2]]+2, Ind_diffeo[1,idx[0],idx[1],idx[2]]+2, Ind_diffeo[2,idx[0],idx[1],idx[2]]+2]
+
+    else:
+      F000 = F[..., Ind_diffeo[0], Ind_diffeo[1], Ind_diffeo[2]]
+      F010 = F[..., Ind_diffeo[0], Ind_diffeo[1] + 1, Ind_diffeo[2]]
+      F100 = F[..., Ind_diffeo[0] + 1, Ind_diffeo[1], Ind_diffeo[2]]
+      F110 = F[..., Ind_diffeo[0] + 1, Ind_diffeo[1] + 1, Ind_diffeo[2]]
+      F001 = F[..., Ind_diffeo[0], Ind_diffeo[1], Ind_diffeo[2] + 1]
+      F011 = F[..., Ind_diffeo[0], Ind_diffeo[1] + 1, Ind_diffeo[2] + 1]
+      F101 = F[..., Ind_diffeo[0] + 1, Ind_diffeo[1], Ind_diffeo[2] + 1]
+      F111 = F[..., Ind_diffeo[0] + 1, Ind_diffeo[1] + 1, Ind_diffeo[2] + 1]
+      
+   
+    if mode == 'id' or mode == 'zero':
+#      print('mode:', mode)
+      #indices = []
+      #indices.append(torch.where((Ind_diffeo[0] < 0) | (Ind_diffeo[0] >= size_h)))
+      #indices.append(torch.where((Ind_diffeo[1] < 0) | (Ind_diffeo[1] >= size_w)))
+      #indices.append(torch.where((Ind_diffeo[2] < 0) | (Ind_diffeo[2] >= size_d)))
+#      if mode == 'id':
+        #for idx in indices:
+          #F000[:,idx[0],idx[1],idx[2]] = torch.stack([Ind_diffeo[0][idx], Ind_diffeo[1][idx], Ind_diffeo[2][idx]]).double()
+          #F010[:,idx[0],idx[1],idx[2]] = torch.stack([Ind_diffeo[0][idx], Ind_diffeo[1][idx] + 1, Ind_diffeo[2][idx]]).double()
+          #F100[:,idx[0],idx[1],idx[2]] = torch.stack([Ind_diffeo[0][idx] + 1, Ind_diffeo[1][idx], Ind_diffeo[2][idx]]).double()
+          #F110[:,idx[0],idx[1],idx[2]] = torch.stack([Ind_diffeo[0][idx] + 1, Ind_diffeo[1][idx] + 1, Ind_diffeo[2][idx]]).double()
+          #F001[:,idx[0],idx[1],idx[2]] = torch.stack([Ind_diffeo[0][idx], Ind_diffeo[1][idx], Ind_diffeo[2][idx] + 1]).double()
+          #F011[:,idx[0],idx[1],idx[2]] = torch.stack([Ind_diffeo[0][idx], Ind_diffeo[1][idx] + 1, Ind_diffeo[2][idx] + 1]).double()
+          #F101[:,idx[0],idx[1],idx[2]] = torch.stack([Ind_diffeo[0][idx] + 1, Ind_diffeo[1][idx], Ind_diffeo[2][idx] + 1]).double()
+          #F111[:,idx[0],idx[1],idx[2]] = torch.stack([Ind_diffeo[0][idx] + 1, Ind_diffeo[1][idx] + 1, Ind_diffeo[2][idx] + 1]).double()
+        idx = torch.where((Ind_diffeo[0] < 0) | (Ind_diffeo[0] >= size_h) |
+                          (Ind_diffeo[1] < 0) | (Ind_diffeo[1] >= size_w) |
+                          (Ind_diffeo[2] < 0) | (Ind_diffeo[2] >= size_d))
+
+        if mode == 'id':
+          F000[...,idx[0],idx[1],idx[2]] = torch.stack([Ind_diffeo[0,idx[0],idx[1],idx[2]], Ind_diffeo[1,idx[0],idx[1],idx[2]], Ind_diffeo[2,idx[0],idx[1],idx[2]]]).double()
+        elif mode == 'zero':
+          F000[...,idx[0],idx[1],idx[2]] = 0
+        
+        idx = torch.where((Ind_diffeo[0] < 0) | (Ind_diffeo[0] >= size_h) |
+                          (Ind_diffeo[1]+1 < 0) | (Ind_diffeo[1]+1 >= size_w) |
+                          (Ind_diffeo[2] < 0) | (Ind_diffeo[2] >= size_d))
+        if mode == 'id':
+          F010[...,idx[0],idx[1],idx[2]] = torch.stack([Ind_diffeo[0,idx[0],idx[1],idx[2]], Ind_diffeo[1,idx[0],idx[1],idx[2]]+1, Ind_diffeo[2,idx[0],idx[1],idx[2]]]).double()
+        elif mode == 'zero':
+          F010[...,idx[0],idx[1],idx[2]] = 0
+
+        idx = torch.where((Ind_diffeo[0]+1 < 0) | (Ind_diffeo[0]+1 >= size_h) |
+                          (Ind_diffeo[1] < 0) | (Ind_diffeo[1] >= size_w) |
+                          (Ind_diffeo[2] < 0) | (Ind_diffeo[2] >= size_d))
+        if mode == 'id':
+          F100[...,idx[0],idx[1],idx[2]] = torch.stack([Ind_diffeo[0,idx[0],idx[1],idx[2]]+1, Ind_diffeo[1,idx[0],idx[1],idx[2]], Ind_diffeo[2,idx[0],idx[1],idx[2]]]).double()
+        elif mode == 'zero':
+          F100[...,idx[0],idx[1],idx[2]] = 0
+
+        idx = torch.where((Ind_diffeo[0]+1 < 0) | (Ind_diffeo[0]+1 >= size_h) |
+                          (Ind_diffeo[1]+1 < 0) | (Ind_diffeo[1]+1 >= size_w) |
+                          (Ind_diffeo[2] < 0) | (Ind_diffeo[2] >= size_d))
+        if mode == 'id':
+          F110[...,idx[0],idx[1],idx[2]] = torch.stack([Ind_diffeo[0,idx[0],idx[1],idx[2]]+1, Ind_diffeo[1,idx[0],idx[1],idx[2]]+1, Ind_diffeo[2,idx[0],idx[1],idx[2]]]).double()
+        elif mode == 'zero':
+          F110[...,idx[0],idx[1],idx[2]] = 0
+
+        idx = torch.where((Ind_diffeo[0] < 0) | (Ind_diffeo[0] >= size_h) |
+                          (Ind_diffeo[1] < 0) | (Ind_diffeo[1] >= size_w) |
+                          (Ind_diffeo[2]+1 < 0) | (Ind_diffeo[2]+1 >= size_d))
+        if mode == 'id':
+          F001[...,idx[0],idx[1],idx[2]] = torch.stack([Ind_diffeo[0,idx[0],idx[1],idx[2]], Ind_diffeo[1,idx[0],idx[1],idx[2]], Ind_diffeo[2,idx[0],idx[1],idx[2]]+1]).double()
+        elif mode == 'zero':
+          F001[...,idx[0],idx[1],idx[2]] = 0
+
+        idx = torch.where((Ind_diffeo[0] < 0) | (Ind_diffeo[0] >= size_h) |
+                          (Ind_diffeo[1]+1 < 0) | (Ind_diffeo[1]+1 >= size_w) |
+                          (Ind_diffeo[2]+1 < 0) | (Ind_diffeo[2]+1 >= size_d))
+        if mode == 'id':
+          F011[...,idx[0],idx[1],idx[2]] = torch.stack([Ind_diffeo[0,idx[0],idx[1],idx[2]], Ind_diffeo[1,idx[0],idx[1],idx[2]]+1, Ind_diffeo[2,idx[0],idx[1],idx[2]]+1]).double()
+        elif mode == 'zero':
+          F011[...,idx[0],idx[1],idx[2]] = 0
+
+        idx = torch.where((Ind_diffeo[0]+1 < 0) | (Ind_diffeo[0]+1 >= size_h) |
+                          (Ind_diffeo[1] < 0) | (Ind_diffeo[1] >= size_w) |
+                          (Ind_diffeo[2]+1 < 0) | (Ind_diffeo[2]+1 >= size_d))
+        if mode == 'id':
+          F101[...,idx[0],idx[1],idx[2]] = torch.stack([Ind_diffeo[0,idx[0],idx[1],idx[2]]+1, Ind_diffeo[1,idx[0],idx[1],idx[2]], Ind_diffeo[2,idx[0],idx[1],idx[2]]+1]).double()
+        elif mode == 'zero':
+          F101[...,idx[0],idx[1],idx[2]] = 0
+
+        idx = torch.where((Ind_diffeo[0]+1 < 0) | (Ind_diffeo[0]+1 >= size_h) |
+                          (Ind_diffeo[1]+1 < 0) | (Ind_diffeo[1]+1 >= size_w) |
+                          (Ind_diffeo[2]+1 < 0) | (Ind_diffeo[2]+1 >= size_d))
+        if mode == 'id':
+          F111[...,idx[0],idx[1],idx[2]] = torch.stack([Ind_diffeo[0,idx[0],idx[1],idx[2]]+1, Ind_diffeo[1,idx[0],idx[1],idx[2]]+1, Ind_diffeo[2,idx[0],idx[1],idx[2]]+1]).double()
+        elif mode == 'zero':
+          F111[...,idx[0],idx[1],idx[2]] = 0
+
+        # for idx in indices:
+        #   zeros = torch.zeros_like(Ind_diffeo[0][idx])
+        #   zerostack = torch.stack([zeros, zeros, zeros]).double()
+        #   #F000[:,idx[0],idx[1],idx[2]] = zerostack
+        #   #F010[:,idx[0],idx[1],idx[2]] = zerostack
+        #   #F100[:,idx[0],idx[1],idx[2]] = zerostack
+        #   #F110[:,idx[0],idx[1],idx[2]] = zerostack
+        #   #F001[:,idx[0],idx[1],idx[2]] = zerostack
+        #   #F011[:,idx[0],idx[1],idx[2]] = zerostack
+        #   #F101[:,idx[0],idx[1],idx[2]] = zerostack
+        #   #F111[:,idx[0],idx[1],idx[2]] = zerostack
+        #   F000[...,idx[0],idx[1],idx[2]] = zerostack
+        #   F010[...,idx[0],idx[1],idx[2]] = zerostack
+        #   F100[...,idx[0],idx[1],idx[2]] = zerostack
+        #   F110[...,idx[0],idx[1],idx[2]] = zerostack
+        #   F001[...,idx[0],idx[1],idx[2]] = zerostack
+        #   F011[...,idx[0],idx[1],idx[2]] = zerostack
+        #   F101[...,idx[0],idx[1],idx[2]] = zerostack
+        #   F111[...,idx[0],idx[1],idx[2]] = zerostack
+
+      # update this part for both id and zero modes (corresponds to partial_id and partial_zero in PyCA)
+      # print('Updating', len(idx[0]), 'indices')
+      # for i in range(len(idx[0])):
+      #   #floorx=Ind_diffeo[0][idx[0][i],idx[1][i],idx[2][i]]
+      #   #floory=Ind_diffeo[1][idx[0][i],idx[1][i],idx[2][i]]
+      #   #floorz=Ind_diffeo[2][idx[0][i],idx[1][i],idx[2][i]]
+      #   floorx=Ind_diffeo[0,idx[0][i],idx[1][i],idx[2][i]]
+      #   floory=Ind_diffeo[1,idx[0][i],idx[1][i],idx[2][i]]
+      #   floorz=Ind_diffeo[2,idx[0][i],idx[1][i],idx[2][i]]
+      #   if ((floorx >= 0) and (floorx < size_h) and 
+      #       (floory >= 0) and (floory < size_w) and 
+      #       (floorz >= 0) and (floorz < size_d)):
+      #     #F000[...,idx[0][i],idx[1][i],idx[2][i]] = F[..., floorx, floory, floorz]
+      #     F000[...,idx[0][i],idx[1][i],idx[2][i]] = f[..., floorx, floory, floorz]
+            
+      #   if ((floorx >= 0) and (floorx < size_h) and 
+      #       (floory+1 >= 0) and (floory+1 < size_w) and 
+      #       (floorz >= 0) and (floorz < size_d)):
+      #     #F010[...,idx[0][i],idx[1][i],idx[2][i]] = F[..., floorx, floory+1, floorz]
+      #     F010[...,idx[0][i],idx[1][i],idx[2][i]] = f[..., floorx, floory+1, floorz]
+          
+      #   if ((floorx+1 >= 0) and (floorx+1 < size_h) and 
+      #       (floory >= 0) and (floory < size_w) and 
+      #       (floorz >= 0) and (floorz < size_d)):
+      #     #F100[...,idx[0][i],idx[1][i],idx[2][i]] = F[..., floorx+1, floory, floorz]
+      #     F100[...,idx[0][i],idx[1][i],idx[2][i]] = f[..., floorx+1, floory, floorz]
+
+      #   if ((floorx+1 >= 0) and (floorx+1 < size_h) and 
+      #       (floory+1 >= 0) and (floory+1 < size_w) and 
+      #       (floorz >= 0) and (floorz < size_d)):
+      #     #F110[...,idx[0][i],idx[1][i],idx[2][i]] = F[..., floorx+1, floory+1, floorz]
+      #     F110[...,idx[0][i],idx[1][i],idx[2][i]] = f[..., floorx+1, floory+1, floorz]
+
+      #   if ((floorx >= 0) and (floorx < size_h) and 
+      #       (floory >= 0) and (floory < size_w) and 
+      #       (floorz+1 >= 0) and (floorz+1 < size_d)):
+      #     #F001[...,idx[0][i],idx[1][i],idx[2][i]] = F[..., floorx, floory, floorz+1]
+      #     F001[...,idx[0][i],idx[1][i],idx[2][i]] = f[..., floorx, floory, floorz+1]
+            
+      #   if ((floorx >= 0) and (floorx < size_h) and 
+      #       (floory+1 >= 0) and (floory+1 < size_w) and 
+      #       (floorz+1 >= 0) and (floorz+1 < size_d)):
+      #     #F011[...,idx[0][i],idx[1][i],idx[2][i]] = F[..., floorx, floory+1, floorz+1]
+      #     F011[...,idx[0][i],idx[1][i],idx[2][i]] = f[..., floorx, floory+1, floorz+1]
+
+      #   if ((floorx+1 >= 0) and (floorx+1 < size_h) and 
+      #       (floory >= 0) and (floory < size_w) and 
+      #       (floorz+1 >= 0) and (floorz+1 < size_d)):
+      #     #F101[...,idx[0][i],idx[1][i],idx[2][i]] = F[..., floorx+1, floory, floorz+1]
+      #     F101[...,idx[0][i],idx[1][i],idx[2][i]] = f[..., floorx+1, floory, floorz+1]
+
+      #   if ((floorx+1 >= 0) and (floorx+1 < size_h) and 
+      #       (floory+1 >= 0) and (floory+1 < size_w) and 
+      #       (floorz+1 >= 0) and (floorz+1 < size_d)):
+      #     #F111[...,idx[0][i],idx[1][i],idx[2][i]] = F[..., floorx+1, floory+1, floorz+1]
+      #     F111[...,idx[0][i],idx[1][i],idx[2][i]] = f[..., floorx+1, floory+1, floorz+1]
+            
+
+#     original and 4.3
+    C = diffeo[0] - Ind_diffeo[0]#.type(torch.DoubleTensor)
+    D = diffeo[1] - Ind_diffeo[1]#.type(torch.DoubleTensor)
+    E = diffeo[2] - Ind_diffeo[2]#.type(torch.DoubleTensor)
+
+# # 4.7
+# #     C = diffeo[0] - Ind_diffeo[2]#.type(torch.DoubleTensor)
+# #     D = diffeo[1] - Ind_diffeo[1]#.type(torch.DoubleTensor)
+# #     E = diffeo[2] - Ind_diffeo[0]#.type(torch.DoubleTensor)
+
+    #interp_f = (1 - C) * (1 - D) * (1 - E) * F000 \
+    #           + (1 - C) * D * (1 - E) * F010 \
+    #           + C * (1 - D) * (1 - E) * F100 \
+    #           + C * D * (1 - E) * F110 \
+    #           + (1 - C) * (1 - D) * E * F001 \
+    #           + (1 - C) * D * E * F011 \
+    #           + C * (1 - D) * E * F101 \
+    #           + C * D * E * F111
+    interp_f = ((1 - C) * ((1 - D) * ((1 - E) * F000 + E * F001) +
+                           D       * ((1 - E) * F010 + E * F011)) +
+                C       * ((1 - D) * ((1 - E) * F100 + E * F101) +
+                           D       * ((1 - E) * F110 + E * F111)))
+
+#     del F000, F010, F100, F110, F001, F011, F101, F111, C, D, E
+#     torch.cuda.empty_cache()
+#    print('interp_f:\n', interp_f)
+    return interp_f
+# end compose_function_orig_3d
+
 def compose_function_3d(f, diffeo, mode='periodic'):  # f: N x h x w x d  diffeo: 3 x h x w x d
     f = f.permute(f.dim() - 3, f.dim() - 2, f.dim() - 1, *range(f.dim() - 3))  # change the size of f to m x n x ...
     size_h, size_w, size_d = f.shape[:3]
+
 #     original and 4.3
     Ind_diffeo = torch.stack((torch.floor(diffeo[0]).long() % size_h,
                               torch.floor(diffeo[1]).long() % size_w,
@@ -404,7 +889,7 @@ def compose_function_3d(f, diffeo, mode='periodic'):  # f: N x h x w x d  diffeo
 #     del F000, F010, F100, F110, F001, F011, F101, F111, C, D, E
 #     torch.cuda.empty_cache()
     return interp_f
-
+# end compose_function_3d
 
 # my interpolation function
 def compose_function_in_place_3d(f, diffeo, mode='periodic'):  # f: N x h x w x d  diffeo: 3 x h x w x d
@@ -507,7 +992,291 @@ def compose_function_in_place_3d(f, diffeo, mode='periodic'):  # f: N x h x w x 
 #     del F000, F010, F100, F110, F001, F011, F101, F111, C, D, E
 #     torch.cuda.empty_cache()
     #return interp_f  
+
+
+def get_div(v):
+#     original
+#     v_x = (torch.roll(v[0], shifts=(0, 0, -1), dims=(0, 1, 2))
+#            - torch.roll(v[0], shifts=(0, 0, -1), dims=(0, 1, 2))) / 2
+#     v_y = (torch.roll(v[1], shifts=(0, -1, 0), dims=(0, 1, 2))
+#            - torch.roll(v[1], shifts=(0, -1, 0), dims=(0, 1, 2))) / 2
+#     v_z = (torch.roll(v[2], shifts=(-1, 0, 0), dims=(0, 1, 2))
+#            - torch.roll(v[2], shifts=(-1, 0, 0), dims=(0, 1, 2))) / 2
+# 4.3 version
+#     v_z = (torch.roll(v[0], shifts=(0, 0, -1), dims=(0, 1, 2))
+#            - torch.roll(v[0], shifts=(0, 0, -1), dims=(0, 1, 2))) / 2
+#     v_y = (torch.roll(v[1], shifts=(0, -1, 0), dims=(0, 1, 2))
+#            - torch.roll(v[1], shifts=(0, -1, 0), dims=(0, 1, 2))) / 2
+#     v_x = (torch.roll(v[2], shifts=(-1, 0, 0), dims=(0, 1, 2))
+#            - torch.roll(v[2], shifts=(-1, 0, 0), dims=(0, 1, 2))) / 2
+# 4.7 version
+#     print('div')
+    v_x = (torch.roll(v[0], shifts=(-1, 0, 0), dims=(0, 1, 2))
+           - torch.roll(v[0], shifts=(-1, 0, 0), dims=(0, 1, 2))) / 2
+    v_y = (torch.roll(v[1], shifts=(0, -1, 0), dims=(0, 1, 2))
+           - torch.roll(v[1], shifts=(0, -1, 0), dims=(0, 1, 2))) / 2
+    v_z = (torch.roll(v[2], shifts=(0, 0, -1), dims=(0, 1, 2))
+           - torch.roll(v[2], shifts=(0, 0, -1), dims=(0, 1, 2))) / 2
+    return v_x + v_y + v_z
+# end get_div
+
+# ad_transpose
+# spatial domain: K(D(v^T) Lw + D(Lw) v + div(L*w x v))
+def ad_transpose(v, w):
+#     input: v/w.shape = [3, h, w, d]
+#     output: shape = [3, h, w, d]
+    '''
+    this function applies the ad transpose operator to two vector fields, v and w, of size 3 x size_h x size_w x size_d
+    '''
+    print("WARNING!!! ad_transpose has not been tested yet!!!")
+
+    Lw = applyL(w)
+
+    Jac_v = get_jacobian_matrix_3d(v)
+    Jac_Lw = get_jacobian_matrix_3d(Lw)
+
+    div_Lw = get_div(Lw)
+
+    rhs = torch.einsum("ji...,i...->j...",Jac_v, Lw) + \
+          torch.einsum("i...,ij...->j...",v,Jac_Lw) + div_Lw * v
+
+    ad_T = applyL(rhs, True)
+    return ad_T
+# end ad_transpose
+
+# coAd
+# dual of Ad operator
+# coAd_(phiinv)(m0) = (D phiinv)^T m0 \circ phiinv |D phiinv|
+def coAd(m0, phiinv):
+#     input: m0/phiinv.shape = [3, h, w, d]
+#     output: shape = [3, h, w, d]
+    '''
+    this function applies the dual of the Adjoint operator w.r.t. phiinv to initial momentum field, m0, of size 3 x size_h x size_w x size_d
+    '''
+    size_h, size_w, size_d = m0.shape[-3:]
+    idty = get_idty_3d(size_h, size_w, size_d)
+
+    J = get_jacobian_matrix_3d(phiinv)
+
+    det = J[0, 0] * (J[1, 1] * J[2, 2] - J[1, 2] * J[2, 1]) - \
+          J[0, 1] * (J[1, 0] * J[2, 2] - J[1, 2] * J[2, 0]) + \
+          J[0, 2] * (J[1, 0] * J[2, 1] - J[1, 1] * J[2, 0])
+
+    mg = compose_function_orig_3d(m0, phiinv)
+
+    coAd_x = det * (J[0,0] * mg[0] + J[1,0] * mg[1] + J[2,0] * mg[2])
+    coAd_y = det * (J[0,1] * mg[0] + J[1,1] * mg[1] + J[2,1] * mg[2])
+    coAd_z = det * (J[0,2] * mg[0] + J[1,2] * mg[1] + J[2,2] * mg[2])
+    
+    return torch.stack((coAd_x, coAd_y, coAd_z)).to(m0.device)
+# end coAd
+
+
+def update_inverse(phiinv, v, num_iters = 1):
+  # Input phi_inv and epsilon * v(x,t)
+  # Return first order approx d(phiinv_t) = phiinv_t(x-eps v(x,t), t)
+
+  # commented out code is from vectormomentum UpdateInverse 
+  idty = get_idty_3d(*v.shape[-3:]).to(v.device)
+  prev_phiinv_t1 = torch.clone(phiinv).double()
+  prev_v = v
+  dt = 1. / num_iters
+  #for ii in range(num_iters):
+    #v_phiinv_t1 = compose_function_orig_3d(v, phiinv_t1, mode='zero')
+    #id_m_v_phiinv_t1 = idty - v_phiinv_t1
+    #phiinv_t1 = compose_function_orig_3d(phiinv, id_m_v_phiinv_t1, mode='id')
+    #cur_phiinv_t1 = prev_phiinv_t1 - v
+    #id_m_v_t = idty - dt * v
+    #phiinv_id_m_v_t = compose_function_orig_3d(cur_phiinv_t1, id_m_v_t, mode='id')
+    #cur_phiinv_t1 = phiinv_id_m_v_t
+    #prev_phiinv_t1 = cur_phiinv_t1
+    
+  id_m_v_t = idty - v
+  #phiinv_id_m_v_t = compose_function_orig_3d(phiinv, id_m_v_t, mode='id')
+  phiinv_id_m_v_t = compose_function_orig_3d(phiinv, id_m_v_t, mode='id')
+  cur_phiinv_t1 = phiinv_id_m_v_t
+    
+  return(cur_phiinv_t1)
+# end update_inverse
+
+# apply L operator
+# m = Lv = applyL(v, False)
+# v = Km = applyL(m, True)
+def applyL(v, applyInverse=False):
+
+  size_h, size_w, size_d = v.shape[-3:]
+  idty = get_idty_3d(size_h, size_w, size_d)
+  alpha = 1.0 # orig
+  gamma = 0.0 # orig
+  lpow = 1.0 # orig
+  alpha = 0.01 # match CAvmGeodesicShooting
+  gamma = 0.001 # match CAvmGeodesicShooting
+  lpow= 1.0
+  coeffs = gamma + alpha * (6. - 2. * (torch.cos(2. * np.pi * idty[0] / size_h) +
+                                       torch.cos(2. * np.pi * idty[1] / size_w) +
+                                       torch.cos(2. * np.pi * idty[2] / size_d)))
+  if lpow == 1.0:
+    lap = coeffs
+  else:
+    lap = torch.pow(coeffs, lpow)
   
+  #print('lap:\n',lap)
+  if applyInverse:
+    #lap[0, 0, 0] = 1.
+    lapinv = torch.nan_to_num(1. / lap, nan=1.0)
+    #lap[0, 0, 0] = 0.
+    #lapinv[0, 0, 0] = 1.
+    fvx = torch.fft.fftn(v[0])
+    fvy = torch.fft.fftn(v[1])
+    fvz = torch.fft.fftn(v[2])
+    lx = fvx * lapinv
+    ly = fvy * lapinv
+    lz = fvz * lapinv
+    Kv_x = torch.real(torch.fft.ifftn(lx))
+    Kv_y = torch.real(torch.fft.ifftn(ly))
+    Kv_z = torch.real(torch.fft.ifftn(lz))
+    return torch.stack((Kv_x, Kv_y, Kv_z)).to(v.device)
+  else:
+    fvx = torch.fft.fftn(v[0])
+    fvy = torch.fft.fftn(v[1])
+    fvz = torch.fft.fftn(v[2])
+    lx = fvx * lap
+    ly = fvy * lap
+    lz = fvz * lap
+    Lv_x = torch.real(torch.fft.ifftn(lx))
+    Lv_y = torch.real(torch.fft.ifftn(ly))
+    Lv_z = torch.real(torch.fft.ifftn(lz))
+    return torch.stack((Lv_x, Lv_y, Lv_z)).to(v.device)
+# end applyL
+    
+# shoot a geodesic from initial velocity, v0, to get diffeomorphism, phi and phiinv, at time t=1
+def shoot_geodesic_velocity_formulation(v0, num_time_steps, do_RK4=True):
+  print("WARNING!!! shoot_geodesic_velocity_formulation has not been tested yet!!!")
+  dt = 1.0 / num_time_steps
+
+  # This implementation derived from FLASH and uses FLASH convention for
+  # phi and phiinv which is opposite of VectorMomentum convention
+  idty = get_idty_3d(*v0.shape[-3:]).to(v0.device)
+  prev_phi = get_idty_3d(*v0.shape[-3:]).to(v0.device)
+  prev_phiinv = get_idty_3d(*v0.shape[-3:]).to(v0.device)
+  prev_v = v0
+
+  for ii in range(num_time_steps):
+    # generate phi^{-1} and phi under left invariant metric
+
+    # Integrate v0
+    if do_RK4:
+      # v1 = v0 - (dt/6) * (k1 + 2*k2 + 2*k3 + k4)
+      # k1
+      v_k1 = ad_transpose(prev_v, prev_v)
+
+      # k2
+      d_k1 = prev_v - (dt / 2.0) * v_k1
+      v_k2 = ad_transpose(d_k1, d_k1)
+     
+      # k3
+      d_k2 = prev_v - (dt / 2.0) * v_k2
+      v_k3 = ad_transpose(d_k2, d_k2)
+     
+      # k4 
+      d_k3 = prev_v - dt * v_k3
+      v_k4 = ad_transpose(d_k4, d_k4)
+
+      # update v1 = v0 - (dt/6) * (k1 + 2*k2 + 2*k3 + k4)
+      cur_v = prev_v - (dt / 6.0) * (v_k1 + 2*v_k2 + 2*v_k3 + v_k4)
+      prev_v = cur_v
+    else:
+      # v0 = v0 - dt * adTranspose(v0, v0)
+      advv = ad_transpose(prev_v, prev_v)
+      cur_v = prev_v - dt * advv
+      prev_v = cur_v
+
+    # Update phi, phiinv (flash and vectormomentum have phi and phiinv swapped)
+    # TODO Determine which fits the convention of metric matching.
+    eye = torch.eye(3, device=v0.device)
+    ones = torch.ones(*v0.shape[-3:], device=v0.device)
+    d_phiinv = get_jacobian_matrix_3d(prev_phiinv - idty) + torch.einsum("ij,mno->ijmno", eye, ones)
+    dphiinv_vt = torch.einsum("ji...,i...->j...",d_phiinv, cur_v)
+    print(d_phiinv.shape, cur_v.shape, dphiinv_vt.shape, prev_phiinv.shape)
+    cur_phiinv = prev_phiinv - dt * dphiinv_vt
+    cur_phi = update_inverse(prev_phi, cur_v)
+    prev_phiinv = cur_phiinv
+    prev_phi = cur_phi
+  
+  return(cur_phiinv, cur_phi, cur_v)
+# end shoot_geodesic_velocity_formulation
+
+# shoot a geodesic from initial velocity, v0, to get diffeomorphism, phi and phiinv, at time t=1
+def shoot_geodesic_momenta_formulation(v0, num_time_steps, do_RK4=True):
+  dt = 1.0 / num_time_steps
+
+  # This implementation derived from VectorMomentum and uses VectorMomentum
+  # convention for phi and phiinv which is opposite of FLASH convention
+  idty = get_idty_3d(*v0.shape[-3:]).to(v0.device)
+  prev_phi = get_idty_3d(*v0.shape[-3:]).to(v0.device)
+  prev_phiinv = get_idty_3d(*v0.shape[-3:]).to(v0.device)
+  m0 = applyL(v0)
+  #prev_v = torch.clone(v0)
+  prev_v = applyL(m0, True)
+  
+
+  for ii in range(num_time_steps):
+    # generate phi^{-1} and phi under left invariant metric
+    print(f'shoot_geodesic_momenta_formulation, iteration {ii}, current GPU mem usage (MB):', torch.cuda.memory_allocated() * 1e-6)
+
+    # Integrate v0
+    if do_RK4:
+      # v1 = v0 + (dt/6) * (k1 + 2*k2 + 2*k3 + k4)
+      # k1
+      phi_k1 = prev_phi
+      phiinv_k1 = prev_phiinv
+      v_k1 = prev_v
+      k1 = dt * compose_function_orig_3d(v_k1, phi_k1)
+      
+      # k2
+      #phi_k2 = phi_k1 + 0.5 * k1
+      phi_k2 = prev_phi + 0.5 * k1
+      #phiinv_k2 = update_inverse(phiinv_k1, k1) 
+      phiinv_k2 = update_inverse(prev_phiinv, k1) 
+      v_k2 = applyL(coAd(m0, phiinv_k2), True)
+      k2 = dt * compose_function_orig_3d(v_k2, phi_k2)
+     
+      # k3
+      #phi_k3 = phi_k2 + 0.5 * k2
+      phi_k3 = prev_phi + 0.5 * k2
+      #phiinv_k3 = update_inverse(phiinv_k2, k2) 
+      phiinv_k3 = update_inverse(prev_phiinv, k2) 
+      v_k3 = applyL(coAd(m0, phiinv_k3), True)
+      k3 = dt * compose_function_orig_3d(v_k3, phi_k3)
+     
+      # k4 
+      #phi_k4 = phi_k3 + k3
+      phi_k4 = prev_phi + k3
+      #phiinv_k4 = update_inverse(phiinv_k3, k3) 
+      phiinv_k4 = update_inverse(prev_phiinv, k3) 
+      v_k4 = applyL(coAd(m0, phiinv_k4), True)
+      k4 = dt * compose_function_orig_3d(v_k4, phi_k4)
+
+      update = (1 / 6.0) * (k1 + 2*k2 + 2*k3 + k4)
+      cur_phi = prev_phi + update
+      cur_phiinv = update_inverse(prev_phiinv, update)
+      cur_v = applyL(coAd(m0, cur_phiinv), True)
+      prev_v = cur_v
+      prev_phi = cur_phi
+      prev_phiinv = cur_phiinv
+    else:
+      # vt+1 = vt + dt * K(coAd(m0, phiinv_t)) \circ phi_t
+      update = dt * compose_function_orig_3d(prev_v, prev_phi)
+      cur_phi = prev_phi + update
+      cur_phiinv = update_inverse(prev_phiinv, update)
+      cur_v = applyL(coAd(m0, cur_phiinv), True)
+      prev_v = cur_v
+      prev_phi = cur_phi
+      prev_phiinv = cur_phiinv
+
+  return(cur_phi, cur_phiinv, cur_v)
+# end shoot_geodesic_momenta_formulation
+
 
 if __name__ == "__main__":
   phi = sio.loadmat('103818toTemp_phi.mat')

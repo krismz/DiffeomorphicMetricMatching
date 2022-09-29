@@ -6,26 +6,29 @@ import matplotlib.pyplot as plt
 import SimpleITK as sitk
 import os
 import random
-from lazy_imports import itkwidgets
-from lazy_imports import itkview
-from lazy_imports import interactive
-from lazy_imports import ipywidgets
-from lazy_imports import pv
+#from lazy_imports import itkwidgets
+#from lazy_imports import itkview
+#from lazy_imports import interactive
+#from lazy_imports import ipywidgets
+#from lazy_imports import pv
 
-from mtch.RegistrationFunc3D import *
-from mtch.SplitEbinMetric3D import *
-from mtch.GeoPlot import *
+#from mtch.RegistrationFunc3D import *
+#from mtch.SplitEbinMetric3D import *
+#from mtch.GeoPlot import *
+from util.RegistrationFunc3D import *
+from util.SplitEbinMetric3D import *
 
 # from Packages.disp.vis import show_2d, show_2d_tensors
 from disp.vis import vis_tensors, vis_path, disp_scalar_to_file
 from disp.vis import disp_vector_to_file, disp_tensor_to_file
 from disp.vis import disp_gradG_to_file, disp_gradA_to_file
 from disp.vis import view_3d_tensors, tensors_to_mesh
+from data.convert import GetNPArrayFromSITK, GetSITKImageFromNP
 
-import algo.metricModSolver2d as mms
-import algo.geodesic as geo
-import algo.euler as euler
-import algo.dijkstra as dijkstra
+#import algo.metricModSolver2d as mms
+#import algo.geodesic as geo
+#import algo.euler as euler
+#import algo.dijkstra as dijkstra
 from torch_sym3eig import Sym3Eig as se
 
 
@@ -220,13 +223,13 @@ def make_pos_def(tens, mask, small_eval = 0.00005):
             # If largest eigenvalue is negative, replace with identity
             eval_2 = (idx[3][ee]+1) % 3
             eval_3 = (idx[3][ee]+2) % 3
-        if ((evals[idx[0][ee], idx[1][ee], idx[2][ee], eval_2] < 0) and 
-         (evals[idx[0][ee], idx[1][ee], idx[2][ee], eval_3] < 0)):
-            evecs[idx[0][ee], idx[1][ee], idx[2][ee]] = fw.eye(3, dtype=tens.dtype)
-            evals[idx[0][ee], idx[1][ee], idx[2][ee], idx[3][ee]] = small_eval
-        else:
-            # otherwise just set this eigenvalue to small_eval
-            evals[idx[0][ee], idx[1][ee], idx[2][ee], idx[3][ee]] = small_eval
+            if ((evals[idx[0][ee], idx[1][ee], idx[2][ee], eval_2] < 0) and 
+             (evals[idx[0][ee], idx[1][ee], idx[2][ee], eval_3] < 0)):
+                evecs[idx[0][ee], idx[1][ee], idx[2][ee]] = fw.eye(3, dtype=tens.dtype)
+                evals[idx[0][ee], idx[1][ee], idx[2][ee], idx[3][ee]] = small_eval
+            else:
+                # otherwise just set this eigenvalue to small_eval
+                evals[idx[0][ee], idx[1][ee], idx[2][ee], idx[3][ee]] = small_eval
 
     print(num_found, 'tensors found with eigenvalues <', small_eval)
     #print(num_found, 'tensors found with eigenvalues < 0')
@@ -266,13 +269,33 @@ if __name__ == "__main__":
     # torch.set_default_tensor_type('torch.cuda.DoubleTensor')
 
     # file_name = []
-    file_name = [108222, 102715, 105923, 107422, 100206, 104416]
-    input_dir = '/usr/sci/projects/HCP/Kris/NSFCRCNS/TestResults/UKF_experiments/BallResults'
-    output_dir = '/home/sci/hdai/Projects/Atlas3D/output/BrainAtlasRandom'
+    #file_name = [108222, 102715, 105923, 107422, 100206, 104416]
+    input_dir = '/usr/sci/projects/abcd/anxiety_study/derivatives/metric_matching'
+    output_dir = '/usr/sci/projects/abcd/anxiety_study/derivatives/atlas_building'
+
+    # TODO need more robust mechanism for working with BIDS data structure
+    cases = [sbj for sbj in os.listdir(input_dir) if sbj[:4] == 'sub-']
+    num=3
+    print(f"WARNING, using first {num} cases and {num} controls only!!")
+    cases = cases[0:num] + cases[18:18+num]
+    #print(f"WARNING,building atlas from first subject repeated twice!!") # next do first 2 subjects
+    #cases= cases[0] + cases[0]
+    #print(f"WARNING, using first {num} cases only!!")
+    #cases = cases[0:num]
+    session = 'ses-baselineYear1Arm1'
+    run = 'run-01'
+    upsamp=''
+    upsamp='_upsamp'
+    
     if not os.path.isdir(output_dir):
         os.mkdir(output_dir)
-    height, width, depth = 145,174,145
-    sample_num = len(file_name)
+    # TODO read dimensions from input data
+    if not upsamp:
+      height, width, depth = 140,140,140
+    else:
+      height, width, depth = 256,256,256
+
+    sample_num = len(cases)
     tensor_lin_list, tensor_met_list, mask_list, mask_thresh_list, fa_list, img_list, brain_mask_list = [], [], [], [], [], [], []
     mask_union = torch.zeros(height, width, depth).double().to(device)
     # brain_mask_union = torch.zeros(height, width, depth).double().to(device)
@@ -280,18 +303,50 @@ if __name__ == "__main__":
     resume = False
    
     start_iter = 0
-    iter_num = 801
+    #iter_num = 801
+    iter_num = 101
 
-    for s in range(len(file_name)):
-        # print(f'{s} is processing.')
+    for s in range(len(cases)):
+        subj = cases[s]
+        print(f'{subj} is processing.')
+        dwi_prefix = os.path.join(input_dir, subj, session,'dwi', f'{subj}_{session}')
+        t1_prefix = os.path.join(input_dir, subj, session,'anat', f'{subj}_{session}')
         # tensor_np = sitk.GetArrayFromImage(sitk.ReadImage(f'{input_dir}/{file_name[s]}_scaled_unsmoothed_tensors.nhdr'))
         # mask_np = sitk.GetArrayFromImage(sitk.ReadImage(f'{input_dir}/{file_name[s]}_filt_mask.nhdr'))
         # brain_mask_np = sitk.GetArrayFromImage(sitk.ReadImage(f'{input_dir}/{file_name[s]}_brain_mask.nhdr'))
         # img_np = sitk.GetArrayFromImage(sitk.ReadImage(f'{input_dir}/{file_name[s]}_T1_flip_y.nhdr'))
-        tensor_np = sitk.GetArrayFromImage(sitk.ReadImage(f'{input_dir}/{file_name[s]}_scaled_unsmoothed_tensors_rreg.nhdr'))
-        mask_np = sitk.GetArrayFromImage(sitk.ReadImage(f'{input_dir}/{file_name[s]}_filt_mask_rreg.nhdr'))
+        if not upsamp:
+          # TODO determine if better to do unsmoothed or scaled_original tensors
+          #tensor_np = sitk.GetArrayFromImage(sitk.ReadImage(f'{dwi_prefix}{upsamp}_scaled_unsmoothed_tensors.nhdr'))
+          tensor_np = sitk.GetArrayFromImage(sitk.ReadImage(f'{dwi_prefix}{upsamp}_scaled_orig_tensors_v2.nhdr'))
+          mask_np = sitk.GetArrayFromImage(sitk.ReadImage(f'{dwi_prefix}{upsamp}_filt_mask.nhdr'))
+        else:
+          # Pad to match dimensions of T1 image
+          # TODO determine if better to do unsmoothed or scaled_original tensors
+          #tensor_np = np.pad(sitk.GetArrayFromImage(sitk.ReadImage(f'{dwi_prefix}{upsamp}_scaled_unsmoothed_tensors.nhdr')),[(9,9),(9,9),(9,9),(0,0)])
+          tensor_np = np.pad(sitk.GetArrayFromImage(sitk.ReadImage(f'{dwi_prefix}{upsamp}_scaled_orig_tensors_v2.nhdr')),[(9,9),(9,9),(9,9),(0,0)])
+          mask_np = np.pad(sitk.GetArrayFromImage(sitk.ReadImage(f'{dwi_prefix}{upsamp}_filt_mask.nhdr')),[(9,9),(9,9),(9,9)])
         # brain_mask_np = sitk.GetArrayFromImage(sitk.ReadImage(f'{input_dir}/{file_name[s]}_brain_mask_rreg.nhdr'))
-        img_np = sitk.GetArrayFromImage(sitk.ReadImage(f'{input_dir}/{file_name[s]}_t1_to_reft1_rreg.nhdr'))
+        img_np = np.transpose(sitk.GetArrayFromImage(sitk.ReadImage(f'{t1_prefix}_T1_flip_y.nhdr')), (0,2,1))
+        if not upsamp:
+          # Match resolution of tensor image
+          t1_t_sitk = GetSITKImageFromNP(img_np)
+          resample = sitk.ResampleImageFilter()
+          resample.SetInterpolator(sitk.sitkLinear)
+          resample.SetOutputDirection(t1_t_sitk.GetDirection())
+          resample.SetOutputOrigin(t1_t_sitk.GetOrigin())
+          new_spacing = [1.7, 1.7, 1.7]
+          resample.SetOutputSpacing(new_spacing)
+
+          orig_size = np.array(t1_t_sitk.GetSize(), dtype=np.int)
+          orig_spacing = list(t1_t_sitk.GetSpacing())
+          new_size = [orig_size[s]*(orig_spacing[s]/new_spacing[s]) for s in range(len(orig_size))]
+          new_size = np.ceil(new_size).astype(np.int) #  Image dimensions are in integers
+          new_size = [int(s) for s in new_size]
+          resample.SetSize(new_size)
+          # Remove extra slices of air to match dimensions and alignment with tensor image
+          img_np = sitk.GetArrayFromImage(resample.Execute(t1_t_sitk)[6:-5,6:-5,6:-5])
+
         # tensor_np = sitk.GetArrayFromImage(sitk.ReadImage(f'{input_dir}/{file_name[s]}_scaled_orig_tensors_rreg_v2.nhdr'))
         # mask_np = sitk.GetArrayFromImage(sitk.ReadImage(f'{input_dir}/{file_name[s]}_orig_mask_rreg.nhdr'))
         # # brain_mask_np = sitk.GetArrayFromImage(sitk.ReadImage(f'{input_dir}/{file_name[s]}_brain_mask_rreg.nhdr'))
@@ -330,15 +385,15 @@ if __name__ == "__main__":
             phi_acc_list.append(get_idty(height, width, depth))
         else:
             print('start from checkpoint')
-            phi_inv_acc_list.append(torch.from_numpy(sio.loadmat(f'{output_dir}/{file_name[s]}_{start_iter-1}_phi_inv.mat')['diffeo']))
-            phi_acc_list.append(torch.from_numpy(sio.loadmat(f'{output_dir}/{file_name[s]}_{start_iter-1}_phi.mat')['diffeo']))
+            phi_inv_acc_list.append(torch.from_numpy(sio.loadmat(f'{output_dir}/{subj}_{session}_{start_iter-1}_phi_inv.mat')['diffeo']))
+            phi_acc_list.append(torch.from_numpy(sio.loadmat(f'{output_dir}/{subj}_{session}_{start_iter-1}_phi.mat')['diffeo']))
             tensor_met_list[s] = phi_pullback(phi_inv_acc_list[s], tensor_met_list[s])
         met_energy_list.append([])    
         img_energy_list.append([])    
         
     # mask_union[mask_union>0] = 1
 
-    print(f'file_name = {file_name}, iter_num = {iter_num}, epsilon = 5e-3')
+    print(f'Subject = {subj}, iter_num = {iter_num}, epsilon = 5e-3')
     print(f'Starting from iteration {start_iter} to iteration {iter_num+start_iter}')
 
     for i in tqdm(range(start_iter, start_iter+iter_num)):
@@ -348,7 +403,8 @@ if __name__ == "__main__":
         mean_img = get_euclidean_mean(img_list)
 
         phi_inv_list, phi_list = [], []
-        mask_union = ((mask_list[0]+mask_list[1]+mask_list[2]+mask_list[3]+mask_list[4]+mask_list[5])/6).to(device)
+        #mask_union = ((mask_list[0]+mask_list[1]+mask_list[2]+mask_list[3]+mask_list[4]+mask_list[5])/6).to(device)
+        mask_union = (sum(mask_list)/len(mask_list)).to(device)
         # brain_mask_union = ((brain_mask_list[0]+brain_mask_list[1]+brain_mask_list[2]+brain_mask_list[3]+brain_mask_list[4]+brain_mask_list[5])/6).to(device)
         for s in range(sample_num):
             met_energy_list[s].append(torch.einsum("ijk...,lijk->",[(tensor_met_list[s] - atlas)**2, mask_union.unsqueeze(0)]).item())
@@ -378,10 +434,10 @@ if __name__ == "__main__":
             atlas_lin[4] = atlas_inv[:,:,:,1,2].cpu()
             atlas_lin[5] = atlas_inv[:,:,:,2,2].cpu()
             for s in range(sample_num):
-                sio.savemat(f'{output_dir}/{file_name[s]}_{i}_phi_inv.mat', {'diffeo': phi_inv_acc_list[s].cpu().detach().numpy()})
-                sio.savemat(f'{output_dir}/{file_name[s]}_{i}_phi.mat', {'diffeo': phi_acc_list[s].cpu().detach().numpy()})
-                sio.savemat(f'{output_dir}/{file_name[s]}_{i}_met_energy.mat', {'energy': met_energy_list[s]})
-                sio.savemat(f'{output_dir}/{file_name[s]}_{i}_img_energy.mat', {'energy': img_energy_list[s]})
+                sio.savemat(f'{output_dir}/{subj}_{session}_{i}_phi_inv.mat', {'diffeo': phi_inv_acc_list[s].cpu().detach().numpy()})
+                sio.savemat(f'{output_dir}/{subj}_{session}_{i}_phi.mat', {'diffeo': phi_acc_list[s].cpu().detach().numpy()})
+                sio.savemat(f'{output_dir}/{subj}_{session}_{i}_met_energy.mat', {'energy': met_energy_list[s]})
+                sio.savemat(f'{output_dir}/{subj}_{session}_{i}_img_energy.mat', {'energy': img_energy_list[s]})
     #             plt.plot(energy_list[s])
                 # mask_acc += mask_list[s].cpu().numpy()
             # mask_acc[mask_acc>0]=1
@@ -393,10 +449,10 @@ if __name__ == "__main__":
     # mask_acc = np.zeros((height,width,depth))
 
     for s in range(sample_num):
-        sio.savemat(f'{output_dir}/{file_name[s]}_phi_inv.mat', {'diffeo': phi_inv_acc_list[s].cpu().detach().numpy()})
-        sio.savemat(f'{output_dir}/{file_name[s]}_phi.mat', {'diffeo': phi_acc_list[s].cpu().detach().numpy()})
-        sio.savemat(f'{output_dir}/{file_name[s]}_{i}_met_energy.mat', {'energy': met_energy_list[s]})
-        sio.savemat(f'{output_dir}/{file_name[s]}_{i}_img_energy.mat', {'energy': img_energy_list[s]})
+        sio.savemat(f'{output_dir}/{subj}_{session}_phi_inv.mat', {'diffeo': phi_inv_acc_list[s].cpu().detach().numpy()})
+        sio.savemat(f'{output_dir}/{subj}_{session}_phi.mat', {'diffeo': phi_acc_list[s].cpu().detach().numpy()})
+        sio.savemat(f'{output_dir}/{subj}_{session}_{i}_met_energy.mat', {'energy': met_energy_list[s]})
+        sio.savemat(f'{output_dir}/{subj}_{session}_{i}_img_energy.mat', {'energy': img_energy_list[s]})
         
         plt.plot(met_energy_list[s])
         plt.plot(img_energy_list[s])

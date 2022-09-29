@@ -5,6 +5,7 @@ import warnings
 import matplotlib.pyplot as plt
 from IPython.core.debugger import set_trace
 from math import pi
+import random
 
 '''
 SplitEbinMetric.py stays the same from Atlas2D to Atlas3D
@@ -57,7 +58,8 @@ def Squared_distance_Ebin(g0, g1, a, mask):
 #     3.3.4 https://www.cs.utah.edu/~haocheng/notes/NoteonMatching.pdf
     inv_g0_g1 = torch.einsum("...ik,...kj->...ij", torch.inverse(g0), g1)
     trK0square = trKsquare(g0, g1) - torch.log(torch.det(inv_g0_g1)) ** 2 *a  # torch.log(torch.det(inv_g0_g1) + 1e-25)
-    theta = torch.min((trK0square / a + 1e-40).sqrt() / 4., torch.tensor(np.pi, dtype=torch.double))  
+    #theta = torch.min((trK0square / a + 1e-40).sqrt() / 4., torch.tensor(np.pi, dtype=torch.double))  
+    theta = torch.min((trK0square / a + 1e-13).sqrt() / 4., torch.tensor(np.pi, dtype=torch.double))  # change 1e-40 to 1e-14, because there is only one negative error of 1e-15 in UKF brain experiment
     alpha, beta = torch.det(g0).pow(1. / 4.), torch.det(g1).pow(1. / 4.)
     E = 16 * a * (alpha ** 2 - 2 * alpha * beta * torch.cos(theta) + beta ** 2)
     return torch.einsum("hwd,hwd->", E, mask)
@@ -86,13 +88,14 @@ def logm_invB_A(B, A):
 #     inputs: A/B.shape = [h, w, d, 3, 3]
 #     output: shape = [h, w, d, 3, 3]
     G = torch.linalg.cholesky(B)
-    torch.linalg.cholesky(A)
     inv_G = torch.inverse(G)
     W = torch.einsum("...ij,...jk,...lk->...il", inv_G, A, inv_G)
     lamda, Q = torch.symeig(W, eigenvectors=True)
     log_lamda = torch.zeros((*lamda.shape, lamda.shape[-1]),dtype=torch.double)
-    # for i in range(lamda.shape[-1]):
-    #     log_lamda[:, i, i] = torch.log(lamda[:, i])
+    ## for i in range(lamda.shape[-1]):
+    ##     log_lamda[:, i, i] = torch.log(lamda[:, i])
+    #lamda, Q = torch.linalg.eig(W)#, eigenvectors=True
+    #lamda, Q = lamda.real, Q.real
     log_lamda = torch.diag_embed(torch.log(lamda))
     V = torch.einsum('...ji,...jk->...ik', inv_G, Q)
     inv_V = torch.inverse(V)
@@ -337,3 +340,37 @@ def get_karcher_mean(G, a):
             gm[Ind_notInRange] = ptPick_notInRange(gm[Ind_notInRange], G[i, Ind_notInRange], i)
 
     return gm.reshape(*size[1:])
+
+
+def get_karcher_mean_shuffle(G, a):
+    size = G.size()
+    G = G.reshape(size[0], -1, *size[-2:])  # (T,-1,3,3)
+
+    orig_list = list(range(G.shape[0]))
+    shuffle_list = orig_list.copy()
+    random.shuffle(shuffle_list)
+    idx_shuffle_map = dict(zip(orig_list, shuffle_list))
+
+    gm = G[idx_shuffle_map[0]]
+
+    for i in range(1, G.size(0)):
+        U = logm_invB_A(gm, G[idx_shuffle_map[i]])
+        UTrless = U - torch.einsum("...ii,kl->...kl", U, torch.eye(size[-1], dtype=torch.double)) / size[
+            -1]  # (...,2,2)
+        theta = ((torch.einsum("...ik,...ki->...", UTrless, UTrless) / a).sqrt() / 4 - np.pi)
+        Ind_inRange = (theta < 0).nonzero().reshape(-1)  ## G[i] is in the range of the exponential map at gm
+        Ind_notInRange = (theta >= 0).nonzero().reshape(-1)  ## G[i] is not in the range
+
+        # when g1 = 0, len(Ind_notInRange) and len(Ind_inRange) are both zero. So check len(Ind_notInRange) first
+        if len(Ind_notInRange) == 0:  # all in the range
+            gm = Rie_Exp_extended(gm, inv_RieExp_extended(gm, G[idx_shuffle_map[i]], a) / (i + 1), a)
+        elif len(Ind_inRange) == 0:  # all not in range
+            gm = ptPick_notInRange(gm, G[idx_shuffle_map[i]], i)
+        else:
+            gm[Ind_inRange] = Rie_Exp_extended(gm[Ind_inRange],
+                                               inv_RieExp_extended(gm[Ind_inRange], G[idx_shuffle_map[i], Ind_inRange], a) / (i + 1),
+                                               a)  # stop here
+            gm[Ind_notInRange] = ptPick_notInRange(gm[Ind_notInRange], G[idx_shuffle_map[i], Ind_notInRange], i)
+
+    return gm.reshape(*size[1:])
+
