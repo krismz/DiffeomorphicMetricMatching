@@ -250,12 +250,14 @@ def get_gradient_3d(F):  # 3D F: size_h x size_w x size_d
 
 
 # get the identity mapping
+# WARNING! This overrides definition in RegistrationFunc3DCuda.py
 def get_idty(size_h, size_w): 
     HH, WW = torch.meshgrid([torch.arange(size_h, dtype=torch.double), torch.arange(size_w, dtype=torch.double)])
 #     return torch.stack((HH, WW))
     return torch.stack((WW, HH))
 
 # get the identity mapping
+# WARNING! Use definition in RegistrationFunc3DCuda.py instead
 def get_idty_3d(size_h, size_w, size_d):
     HH, WW, DD = torch.meshgrid([torch.arange(size_h),#, dtype=torch.double
                                  torch.arange(size_w),#, dtype=torch.double

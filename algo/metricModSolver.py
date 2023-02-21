@@ -2375,11 +2375,12 @@ class gmres_iter_status(object):
         if self._disp:
             print("iter %3i\trk=%s" % (self.niter, str(rk)))
 
-def solve_3d(in_tens, in_mask, max_iters, clipped_range=None, thresh_ratio=None, save_intermediate_results = False, small_eval = 5e-5, sigma=None):
+def solve_3d(in_tens, in_mask, max_iters, clipped_range=None, thresh_ratio=None, save_intermediate_results = False, small_eval = 5e-5, sigma=None, do_mask_open=True):
   # This is the main entry point
   # assumes in_tens is the upper-triangular representation
   # clipped_range defaults to [-2,2]
   # thresh_ratio defaults to 1.0
+
   # any eigenvalues < small_eval are set to small_eval
 
   fw, fw_name = get_framework(in_tens)
@@ -2398,6 +2399,8 @@ def solve_3d(in_tens, in_mask, max_iters, clipped_range=None, thresh_ratio=None,
     mask = fw.clone(in_mask)
   
   tens = fw.zeros((xsz,ysz,zsz,3,3),dtype=fw.double)
+  print('in_tens.shape:', in_tens.shape)
+  print('tens.shape:', tens.shape)
   intermed_results = {}
   tot_time = 0
 
@@ -2458,7 +2461,8 @@ def solve_3d(in_tens, in_mask, max_iters, clipped_range=None, thresh_ratio=None,
     intermed_results['orig_mask'] = mask
 
   # remove small components via morphological operations
-  mo.open_mask_3d(mask)
+  if do_mask_open:
+    mo.open_mask_3d(mask)
     
   bdry_type, bdry_idx, bdry_map = mo.determine_boundary_3d(mask, True)
   if save_intermediate_results:

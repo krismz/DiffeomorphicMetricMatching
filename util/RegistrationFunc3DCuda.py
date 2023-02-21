@@ -79,12 +79,11 @@ def get_idty(size_h, size_w, size_d, device='cuda:0'):
 
 
 # my interpolation function
-def compose_function(f, diffeo, mask=None, mask_value=None, mode='periodic'):  # f: N x h x w x d  diffeo: 3 x h x w x d
+def compose_function(f, diffeo, mode='periodic'):  # f: N x h x w x d  diffeo: 3 x h x w x d
     f = f.permute(f.dim() - 3, f.dim() - 2, f.dim() - 1, *range(f.dim() - 3))  # change the size of f to m x n x ...
     size_h, size_w, size_d = f.shape[:3]
     eye_shape = f.shape[3:]
-    if mask is not None and mask_value is None:
-        mask_value = torch.eye(eye_shape)
+
 #     original and 4.3
     Ind_diffeo = torch.stack((torch.floor(diffeo[0]).long() % size_h,
                               torch.floor(diffeo[1]).long() % size_w,
@@ -155,7 +154,6 @@ def compose_function(f, diffeo, mask=None, mask_value=None, mode='periodic'):  #
     #      'C Inf?', C.isinf().any(), 'D Inf?', D.isinf().any(),
     #      'E Inf?', E.isinf().any(), 'interp_f Inf?',interp_f.isinf().any())
 
-    print("WARNING!!! mask ignored in compose_function, change signature so no longer needed to pass in")
     #if mask is not None:
     #    interp_f.permute(interp_f.dim() - 3, interp_f.dim() - 2, interp_f.dim() - 1, *range(interp_f.dim() - 3))[mask == 0] = mask_value
 #     del F000, F010, F100, F110, F001, F011, F101, F111, C, D, E

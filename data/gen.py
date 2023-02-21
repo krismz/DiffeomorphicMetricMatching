@@ -168,8 +168,10 @@ def add_to_3D_image(im, xys, pixsum, cnt, round_to_1=True):
     im[im < 1] = 0
   else:
     # this a different version of rounding that works better for 3d annulus at the points away from center in the z direction
-    im[pixsum > 1] = 1 
-    im[pixsum <= 1] = 0
+    #im[pixsum > 1] = 1 
+    #im[pixsum <= 1] = 0
+    im[pixsum > 0] = 1 
+    im[pixsum <= 0] = 0
   return(im)
 
 def add_to_2D_seed_image(im, xys, xrg, yrg, seed1, seed2):
@@ -192,18 +194,19 @@ def add_to_2D_seed_image(im, xys, xrg, yrg, seed1, seed2):
     im[xidx,yidx] = 1
   return(im)
 
-def add_to_3D_seed_image(im, x, y, zs, dx, dy, rsq, xrg, yrg, zrg, seed1, seed2):
+def add_to_3D_seed_image(im, x, y, zs, dx, dy, rsq, xrg, yrg, zrg, seed1, seed2, zero_padding_width):
   # Basically, set a seed at time 1 and at time 2, rest of image is 0
   # Here seed1 is the index into x,y at t1, and seed2 is the index into x,y at t2
   # There is probably a more elegant way to do this.
   # TODO decide if we want an antialiased version of the seed (ala add_to_2D_image)
-  xinc =  (xrg[1]-xrg[0]) / im.shape[0]
-  yinc =  (yrg[1]-yrg[0]) / im.shape[1]
+  xinc =  (xrg[1]-xrg[0]) / (im.shape[0]-1-2*zero_padding_width)
+  yinc =  (yrg[1]-yrg[0]) / (im.shape[1]-1-2*zero_padding_width)
   zinc = xinc
+  zcenter = int(im.shape[2] / 2)
   for zz in zs:
     cur_rsq = rsq - zz**2
     if cur_rsq <= 0:
-      break
+      continue
     cur_r  = np.sqrt(cur_rsq)
     # seed 1
     max_tsq = cur_rsq / (dx[seed1]**2 + dy[seed1]**2)
@@ -212,11 +215,14 @@ def add_to_3D_seed_image(im, x, y, zs, dx, dy, rsq, xrg, yrg, zrg, seed1, seed2)
     for tt in tspc:
       pts, pcts = get_3D_antialiased_points((x[seed1] + tt*dy[seed1] - xrg[0]) / xinc, (y[seed1] - tt*dx[seed1] - yrg[0]) / yinc, (zz - zrg[0]) / zinc)
       for pt, pct in zip(pts,pcts):
-        xbin = pt[0]
-        ybin = pt[1]
-        zbin = pt[2]
-            
+        xbin = pt[0] + zero_padding_width
+        ybin = pt[1] + zero_padding_width
+        zbin = pt[2] + zero_padding_width
+
         im[xbin,ybin,zbin] = 1
+        ozbin = zcenter + (zcenter - zbin)
+        if ozbin != zbin:
+          im[xbin,ybin,ozbin] = 1
 
     # seed 2
     max_tsq = cur_rsq / (dx[seed2]**2 + dy[seed2]**2)
@@ -225,11 +231,15 @@ def add_to_3D_seed_image(im, x, y, zs, dx, dy, rsq, xrg, yrg, zrg, seed1, seed2)
     for tt in tspc:
       pts, pcts = get_3D_antialiased_points((x[seed2] + tt*dy[seed2] - xrg[0]) / xinc, (y[seed2] - tt*dx[seed2] - yrg[0]) / yinc, (zz - zrg[0]) / zinc)
       for pt, pct in zip(pts,pcts):
-        xbin = pt[0]
-        ybin = pt[1]
-        zbin = pt[2]
-            
+        xbin = pt[0] + zero_padding_width
+        ybin = pt[1] + zero_padding_width
+        zbin = pt[2] + zero_padding_width
+
         im[xbin,ybin,zbin] = 1
+
+        ozbin = zcenter + (zcenter - zbin)
+        if ozbin != zbin:
+          im[xbin,ybin,ozbin] = 1
     
   return(im)
 
@@ -322,6 +332,54 @@ def add_to_3D_tensor_image(im, xy, dx, dy, pixsum, cnts, ratio, template_tensor=
           im[ii,jj,kk] = np.matmul(R, np.matmul(template, np.transpose(R)))[triu_idx]
 
   return(im)
+
+def add_to_3D_tensor_random_image(im, xy, dx, dy, pixsum, cnts, ratio, std_devs, template_means=None):
+  # ratio equals major axis / minor axis
+  # from https://sciencing.com/vector-perpendicular-8419773.html
+  template = np.zeros((3,3),dtype=np.float64)
+
+  if template_means is None:
+    template_mean1 = ratio
+    template_mean2 = 1.0
+    template_mean3 = 1.0
+  else:
+    template_mean1 = template_means[0]
+    template_mean2 = template_means[1]
+    template_mean3 = template_means[2]
+
+  template_fa = np.sqrt(((template_mean1-template_mean2)**2 + (template_mean2-template_mean3)**2 + (template_mean3-template_mean1)**2) /
+                        (2.0*(template_mean1**2 + template_mean2**2 + template_mean3**2)))
+  
+  R = np.zeros((3,3),dtype=np.float64)
+  triu_idx = np.triu_indices(3) # to extract upper triangle
+  rand_evals = np.zeros((*im.shape[0:3],3))
+  rand_evals[...,0] = np.random.normal(template_mean1, std_devs[0],size=im.shape[0:3])
+  rand_evals[...,1] = np.random.normal(template_mean2, std_devs[1],size=im.shape[0:3])
+  rand_evals[...,2] = np.random.normal(template_mean3, std_devs[2],size=im.shape[0:3])
+ 
+  for ii in range(im.shape[0]):
+    for jj in range(im.shape[1]):
+      for kk in range(im.shape[2]):
+        if pixsum[ii,jj,kk] > 0:
+          dxijk = dx[ii,jj,kk] / pixsum[ii,jj,kk]
+          dyijk = dy[ii,jj,kk] / pixsum[ii,jj,kk]
+          dzijk = 0
+          denom = np.sqrt(dxijk*dxijk + dyijk*dyijk)# + dzijk*dzijk (dzijk=0, so don't need to add in)
+          if denom == 0:
+            denom=1
+          R[0,0] = dxijk / denom
+          R[1,0] = dyijk / denom
+          R[0,1] = -R[1,0]
+          R[1,1] = R[0,0]
+          R[2,2] = 1
+          template[0,0] = rand_evals[ii,jj,kk,0]
+          template[1,1] = rand_evals[ii,jj,kk,1]
+          template[2,2] = rand_evals[ii,jj,kk,2]
+          
+          im[ii,jj,kk] = np.matmul(R, np.matmul(template, np.transpose(R)))[triu_idx]
+
+  return(im, rand_evals)
+ 
 
  
 def get_antialiased_points(x, y):
@@ -513,13 +571,28 @@ def gen_2D_tensor_image(xsz, ysz, tmin, tmax, numt, xf, dxf, yf, dyf, fdist, num
 
   return(img, tens, seed, xrg, yrg)
 
-def gen_3D_tensor_image(xsz, ysz, tmin, tmax, numt, xf, dxf, yf, dyf, fdist, numf, ratio, seed_t1, seed_t2, do_isotropic=True, do_blurring=True, do_matching_range=False, xrng=None, yrng=None, zrng=None, template_tensor=None, zero_padding_width=None):
+def gen_3D_tensor_image(xsz, ysz, tmin, tmax, numt, xf, dxf, yf, dyf, fdist, numf, ratio, seed_t1, seed_t2, do_isotropic=True, do_blurring=True, do_matching_range=False, xrng=None, yrng=None, zrng=None, template_tensor=None, template_stddevs=None, zero_padding_width=None, iso_scale=None, round_to_1=True):
   # Compute 3D tensor image that is a tube version of the 2D tensor image from gen_2D_tensor_image
   # with the center slice in the z-direction the same as gen_2D_tensor_image (but with 3D tensors)
   # fdist should be between 0 and 1
   # ratio is the desired ratio between major and minor axes of each tensor
   # seed_t1 and seed_t2 are expressed as a fraction of the time range.  ie seed_t1 == 0.25 says to put a seed 1/4 of the way along the curve
   # if zero_padding_width is provided, make sure border of that width is all zeros in the final image
+  if template_stddevs is None:
+   template_stddevs = [0,0,0]
+
+  if template_tensor is None:
+   template_means = [ratio, 1.0, 1.0]
+  else:
+   template_means = [template_tensor[0,0],template_tensor[1,1], template_tensor[2,2]]
+
+  if zero_padding_width is None:
+   zero_padding_width = 0
+ 
+  # scale isotropic tensors outside image by this factor
+  if iso_scale is None:
+    iso_scale = 0.1
+
   t = np.linspace(tmin, tmax, numt, dtype=np.float64)
   x = xf(t)
   y = yf(t)
@@ -528,15 +601,18 @@ def gen_3D_tensor_image(xsz, ysz, tmin, tmax, numt, xf, dxf, yf, dyf, fdist, num
   #print("(x1,y1,z0)=",x[-1],y[-1],zcenter)
   dx = dxf(t, numt)
   dy = dyf(t, numt)
-
-  # scale isotropic tensors outside image by this factor
-  iso_scale = 0.1
   
   # Convert seed_t1, seed_t2 into indices into t which is length numt
   seed1 = min(int(round(seed_t1 * (numt-1))), t.shape[0])
   seed2 = min(int(round(seed_t2 * (numt-1))), t.shape[0])
 
   (px, py, nx, ny) = par_curv(fdist, x, dx, y, dy)
+  
+  rsq=(px[0]-x[0])**2 + (py[0]-y[0])**2
+  rsq2=(nx[0]-x[0])**2 + (ny[0]-y[0])**2
+  radius = np.sqrt(rsq)
+  radius2 = np.sqrt(rsq2)
+  
   minx = min(min(px), min(nx))
   maxx = max(max(px), max(nx))
   distx = max(abs(px-nx))
@@ -547,21 +623,21 @@ def gen_3D_tensor_image(xsz, ysz, tmin, tmax, numt, xf, dxf, yf, dyf, fdist, num
   maxxy = max(maxx, maxy)
   maxdist = max(distx, disty)
   if xrng is None:
-    xrg = (minx-0.2, maxx+0.2)
+    xrg = (minx, maxx)
   elif do_matching_range: 
-    xrg = (minxy-0.2, maxxy+0.2)
+    xrg = (minxy, maxxy)
   else:
     xrg = xrng
   if yrng is None:
-    yrg = (miny-0.2, maxy+0.2)
+    yrg = (miny, maxy)
   elif do_matching_range: 
-    yrg = (minxy-0.2, maxxy+0.2)
+    yrg = (minxy, maxxy)
   else:
     yrg = yrng
   if zrng is None:
-    zrg = (-maxdist-0.2, maxdist+0.2)
+    zrg = (-radius, radius)
   elif do_matching_range: 
-    zrg = (minxy-0.2, maxxy+0.2)
+    zrg = (minxy, maxxy)
   else:
     zrg = zrng
     
@@ -577,10 +653,11 @@ def gen_3D_tensor_image(xsz, ysz, tmin, tmax, numt, xf, dxf, yf, dyf, fdist, num
     yrg = (minrng, maxrng)
     print('adjusting xrg, yrg to ', xrg, yrg)
 
-  xinc = (xrg[1]-xrg[0]) / xsz
-  yinc = (yrg[1]-yrg[0]) / ysz
+  xinc = (xrg[1]-xrg[0]) / (xsz-1-2*zero_padding_width)
+  yinc = (yrg[1]-yrg[0]) / (ysz-1-2*zero_padding_width)
   zinc = xinc #(zrg[1]-zrg[0]) / zsz
-  zsz = int(round((zrg[1]-zrg[0]) / zinc))
+  #zsz = int(round((zrg[1]-zrg[0]) / zinc))
+  zsz = int(round(((zrg[1]-zrg[0]) / zinc)+1+2*zero_padding_width))
   zcenter = int(zsz / 2)
 
   img = np.zeros((xsz, ysz, zsz))
@@ -604,21 +681,12 @@ def gen_3D_tensor_image(xsz, ysz, tmin, tmax, numt, xf, dxf, yf, dyf, fdist, num
 
   xys = np.array((x,y))
   dxdys = np.array((dx,dy))
-
-  rsq=(px[0]-x[0])**2 + (py[0]-y[0])**2
-  rsq2=(nx[0]-x[0])**2 + (ny[0]-y[0])**2
-  radius = np.sqrt(rsq)
-  radius2 = np.sqrt(rsq2)
  
   zctrval = zrg[0] + zinc * zcenter
-  #zs = np.linspace(-radius, radius, zsz)
   # Do this way to ensure we're symmetric in the z-direction
-  zhalf = np.linspace(-radius,0,int((zsz-1)/2),endpoint=False)
+  zhalf = np.linspace(-radius-xinc,0,zsz-1-2*zero_padding_width,endpoint=False)
   zs = np.concatenate((zhalf,[0]))  
   idx=0
-
-  #xcurval = x[idx]
-  #ycurval = y[idx]
 
   dxim = np.zeros((tens.shape[0],tens.shape[1],tens.shape[2]))
   dyim = np.zeros((tens.shape[0],tens.shape[1],tens.shape[2]))
@@ -628,21 +696,22 @@ def gen_3D_tensor_image(xsz, ysz, tmin, tmax, numt, xf, dxf, yf, dyf, fdist, num
   #print(xcurval, ycurval)
   for zz in zs:
     cur_rsq = rsq - zz**2
-    if cur_rsq <= 0:
+    #if cur_rsq <= 0:
+    if cur_rsq <= -1.0e-8:
       continue 
+    cur_rsq = max(0,cur_rsq)
     cur_r  = np.sqrt(cur_rsq)
     for idx in range(len(x)):
       max_tsq = cur_rsq / (dx[idx]**2 + dy[idx]**2)
       max_t = np.sqrt(max_tsq)
-      #tspc = np.linspace(-max_t, max_t, 100)
       thalf = np.linspace(-max_t,0,75,endpoint=False)
       tspc = np.concatenate((thalf,[0],-thalf[::-1]))
       for tt in tspc:
         pts, pcts = get_3D_antialiased_points((x[idx] + tt*dy[idx] - xrg[0]) / xinc, (y[idx] - tt*dx[idx] - yrg[0]) / yinc, (zz - zrg[0]) / zinc)
         for pt, pct in zip(pts,pcts):
-          xbin = pt[0]
-          ybin = pt[1]
-          zbin = pt[2]
+          xbin = pt[0] + zero_padding_width
+          ybin = pt[1] + zero_padding_width
+          zbin = pt[2] + zero_padding_width
             
           ozbin = zcenter + (zcenter - zbin)
             
@@ -656,9 +725,10 @@ def gen_3D_tensor_image(xsz, ysz, tmin, tmax, numt, xf, dxf, yf, dyf, fdist, num
             pixsum[xbin,ybin,ozbin] += pct
             cnts[xbin,ybin,ozbin] += 1
 
-  add_to_3D_image(img, xys, pixsum, cnts, round_to_1=False)
-  add_to_3D_tensor_image(tens, xys, dxim, dyim, pixsum, cnts, ratio, template_tensor) # need to figure out blurring in this new context
-  add_to_3D_seed_image(seed, x, y, zs, dx, dy, rsq, xrg, yrg, zrg, seed1, seed2)
+  add_to_3D_image(img, xys, pixsum, cnts, round_to_1=round_to_1)
+  tmp, rand_evals = add_to_3D_tensor_random_image(tens, xys, dxim, dyim, pixsum, cnts, ratio, template_stddevs, template_means) # need to figure out blurring in this new context
+  del tmp
+  add_to_3D_seed_image(seed, x, y, zs, dx, dy, rsq, xrg, yrg, zrg, seed1, seed2, zero_padding_width)
 
   if zero_padding_width:
     if do_isotropic:
@@ -687,7 +757,7 @@ def gen_3D_tensor_image(xsz, ysz, tmin, tmax, numt, xf, dxf, yf, dyf, fdist, num
     seed[:,:,0:zero_padding_width] = 0
     seed[:,:,-zero_padding_width:] = 0
 
-  return(img, tens, seed, xrg, yrg, zrg, zsz)
+  return(img, tens, seed, rand_evals, xrg, yrg, zrg, zsz)
 
  
 def tensor_to_uv(img):
@@ -728,9 +798,9 @@ def gen_2D_annulus(xsz, ysz, ratio, do_isotropic=True, do_blurring=True,
                              zero_padding_width=zero_padding_width))
 
 def gen_3D_annulus(xsz, ysz, ratio, do_isotropic=True, do_blurring=True,
-                   do_matching_range=False, xrng=None, yrng=None, zrng=None, template_tensor=None,zero_padding_width=None):
+                   do_matching_range=False, xrng=None, yrng=None, zrng=None, template_tensor=None,template_stddevs=None, zero_padding_width=None, iso_scale=None):
   return(gen_3D_tensor_image(xsz, ysz, 0, np.pi, 1000, cos_t, d_cos_t, sin_t, d_sin_t, 1/5.0, 15, ratio, 0.05, 0.95,
-                             do_isotropic, do_blurring, do_matching_range, xrng=xrng, yrng=yrng, zrng=zrng, template_tensor=template_tensor, zero_padding_width=zero_padding_width))
+                             do_isotropic, do_blurring, do_matching_range, xrng=xrng, yrng=yrng, zrng=zrng, template_tensor=template_tensor, template_stddevs=None, zero_padding_width=zero_padding_width,iso_scale=iso_scale,round_to_1=False))
 
 def gen_2D_rectangle_gradient_ratio(xsz, ysz, ratio, rotation=None, do_isotropic=True, zero_padding_width=None):
   # generate a 2D rectangle whose tensors vary from isotropic to ratio in the x direction
